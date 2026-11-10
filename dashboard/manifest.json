@@ -1,0 +1,9 @@
+{
+  "name": "hermes-plant",
+  "label": "Houseplant",
+  "version": "1.0.0",
+  "description": "Data routes for the Hermes Desktop houseplant.",
+  "tab": { "hidden": true },
+  "entry": "index.js",
+  "api": "plugin_api.py"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "hermes-plant-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Source of desktop/plugin.js. `npm ci && npm run build` regenerates it.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "parity": "node scripts/parity.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
