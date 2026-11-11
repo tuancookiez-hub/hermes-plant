@@ -1,5 +1,5 @@
 name: hermes-plant
-version: "1.1.0"
+version: "1.2.0"
 description: "A calm little garden for Hermes Desktop that grows in real time. It sits above the app like the Hermes pet, takes no layout space, and can be dragged anywhere. Click a plant for a care wheel: water, prune, rotate, fertilize, repot, pick, sell, or ask Hermes. Four species (leafy plant, fern, cactus, little tree) grow in their own ways, pruning shapes how each one branches, and neglect only pauses them. Care earns play coins, and a small shop sells more plants and fertilizer, up to six pots. Two agent tools let Hermes check the garden and tend it when you ask. Disclosures: no network requests, no background model calls and no background processes; growth is worked out from saved timestamps. Ask Hermes sends one chat message, and only when you press it. Coins are play money inside the plugin. The garden is stored in Hermes plugin storage on this machine. Hermes has no plugin area for this kind of overlay, so the plugin adds its own element to the page and removes it when unloaded."
 author: tuancookiez
 license: MIT

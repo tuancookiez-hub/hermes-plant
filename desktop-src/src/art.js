@@ -223,7 +223,8 @@ function drawColumns(lines, look, weight) {
 /**
  * Draws one plant in its pot. `view` is what `describePlant` returns. `uid` keeps the SVG's ids apart
  * when several plants share a page. The root element carries `data-tip-x` and `data-tip-y`: where the
- * tallest tip is, as fractions of the picture, so the page can aim an animation at it.
+ * tallest tip is, as fractions of the picture, so the page can aim an animation at it. `data-tips`
+ * lists every live tip the same way, in the order the rules count them when one is chosen for a cut.
  */
 export function drawPlant(plant, view, uid = 'hp') {
   const look = LOOKS[plant.kind] ?? LOOKS.leafy
@@ -268,11 +269,14 @@ export function drawPlant(plant, view, uid = 'hp') {
   const frame = Math.min(VIEW, Math.max(MIN_FRAME, VIEW - (pot.top + 1 + box.top * scale) + 3, reach))
   const frameX = Math.min(VIEW - frame, Math.max(0, cx - frame / 2))
   const highest = laid.tips.reduce((best, tip) => (tip.y < best.y ? tip : best), { x: 0, y: box.top / 2 })
-  const tipX = (cx + highest.x * scale - frameX) / frame
-  const tipY = (pot.top + 1 + highest.y * scale - (VIEW - frame)) / frame
+  const across = x => (cx + x * scale - frameX) / frame
+  const down = y => (pot.top + 1 + y * scale - (VIEW - frame)) / frame
+  const tipX = across(highest.x)
+  const tipY = down(highest.y)
+  const allTips = laid.tips.map(tip => `${across(tip.x).toFixed(3)},${down(tip.y).toFixed(3)}`).join(';')
 
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(frameX)} ${n(VIEW - frame)} ${n(frame)} ${n(frame)}" width="100%" height="100%" aria-hidden="true" data-tip-x="${tipX.toFixed(3)}" data-tip-y="${tipY.toFixed(3)}" stroke="${INK}" stroke-width="${LINE}" stroke-linecap="round" stroke-linejoin="round">` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(frameX)} ${n(VIEW - frame)} ${n(frame)} ${n(frame)}" width="100%" height="100%" aria-hidden="true" data-tip-x="${tipX.toFixed(3)}" data-tip-y="${tipY.toFixed(3)}" data-tips="${allTips}" stroke="${INK}" stroke-width="${LINE}" stroke-linecap="round" stroke-linejoin="round">` +
     `<defs><g id="${uid}-leaf">${LEAF}</g><g id="${uid}-small">${SMALL_LEAF}</g><g id="${uid}-limp">${LIMP_LEAF}</g><g id="${uid}-round">${ROUND_LEAF}</g><g id="${uid}-flower">${FLOWER}</g><g id="${uid}-bud">${BUD}</g></defs>` +
     pot.back +
     `<g class="hp-foliage"><g transform="translate(${n(cx)} ${n(pot.top + 1)}) scale(${Math.round(scale * 1000) / 1000})" fill="none">${stems}${leaves}${tips}</g></g>` +

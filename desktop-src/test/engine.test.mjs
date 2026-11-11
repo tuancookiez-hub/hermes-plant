@@ -329,3 +329,35 @@ test('the summary names every plant, the coins and a waiting bug', () => {
 test('parity.json matches the rules (run `npm run parity` after changing one)', () => {
   assert.equal(readFileSync(PARITY_FILE, 'utf8'), buildParity())
 })
+
+test('a cut can choose its tip, and the choice is kept with the cut', () => {
+  const garden = withPlant({ pot: 3, growthMs: 6 * DAY })
+  const tallest = tend(garden, 'prune', T0).garden.plants[0]
+  const chosen = tend(garden, 'prune', T0, { tip: 2 }).garden.plants[0]
+  assert.deepEqual(tallest.picks, [-1])
+  assert.deepEqual(chosen.picks, [2])
+  assert.deepEqual(chosen.cuts, tallest.cuts)
+  for (const tip of [-4, 1.5, 'top', null]) assert.deepEqual(tend(garden, 'prune', T0, { tip }).garden.plants[0].picks, [-1])
+  assert.deepEqual(tend(garden, 'prune', T0, { tip: 900 }).garden.plants[0].picks, [63])
+  // A save from before tips could be chosen has no picks.
+  const { picks: _, ...old } = chosen
+  assert.deepEqual(restoreGarden({ ...garden, plants: [old] }, T0).plants[0].picks, [-1])
+})
+
+test('the chosen tip is the one that is cut, and the drawing lists the tips in the same order', () => {
+  for (const kind of ['leafy', 'bonsai', 'cactus']) {
+    const plant = { kind, seed: 9, cuts: [], picks: [] }
+    const live = shape(plant, 40).stems.filter(stem => !stem.cut)
+    assert.ok(live.length > 1, kind)
+    const svg = drawPlant(plant, { droop: 0, fed: false, lean: 0, nodes: 40, pot: 2, show: 'none' })
+    assert.equal(svg.match(/data-tips="([^"]*)"/)[1].split(';').length, live.length, kind)
+    const cutAt = pick => shape({ ...plant, cuts: [40], picks: [pick] }, 40).stems.findIndex(stem => stem.cut)
+    const places = shape(plant, 40).stems.flatMap((stem, i) => (stem.cut ? [] : [i]))
+    for (const pick of [0, 1, live.length - 1]) assert.equal(cutAt(pick), places[pick], `${kind} ${pick}`)
+    assert.equal(cutAt(live.length), places[0], `${kind} wraps`)
+  }
+  const fern = { kind: 'fern', seed: 9, cuts: [40], picks: [1] }
+  const fronds = shape(fern, 40).stems
+  assert.equal(fronds.filter(frond => frond.cut).length, 1)
+  assert.notEqual(fronds.findIndex(frond => frond.cut), shape({ ...fern, picks: [3] }, 40).stems.findIndex(frond => frond.cut))
+})

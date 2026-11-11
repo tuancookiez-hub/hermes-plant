@@ -16,6 +16,8 @@ export const BASE_NODES = 4
 export const NODE_RATE = 12
 export const MAX_NODES = 72
 export const MAX_CUTS = 240
+// A cut remembers which tip was chosen, as its place among the live tips, or -1 for the tallest.
+export const MAX_PICK = 63
 export const MAX_PLANTS = 6
 export const MAX_FERTILIZER = 9
 export const START_COINS = 20
@@ -72,6 +74,7 @@ function newPlant(id, kind, seed, now) {
     hydratedUntil: now + KINDS[kind].hydrated,
     growthMs: 0,
     cuts: [],
+    picks: [],
     fedUntil: 0,
     leanAt: 0,
     turnedAt: now,
@@ -135,6 +138,7 @@ function fromSinglePlant(input) {
         id: 1,
         kind: 'leafy',
         cuts: raw.cuts.map(node => (Number.isInteger(node) && node > BASE_NODES ? BASE_NODES + 2 * (node - BASE_NODES) : node)),
+        picks: raw.cuts.map(() => -1),
         pot: potFor(raw.growthMs),
         pickedAt: 0
       }
@@ -150,6 +154,10 @@ function restorePlant(raw, now) {
   if (!numbers.every(Number.isFinite)) return null
   if (!Number.isInteger(raw.pot) || raw.pot < 0 || raw.pot >= POTS.length) return null
   if (raw.growthMs < 0 || !raw.cuts.every(n => Number.isInteger(n) && n >= 0)) return null
+  // Saves from before 1.2 have no picks: every one of their cuts took the tallest tip.
+  const known = Array.isArray(raw.picks) && raw.picks.length === raw.cuts.length && raw.picks.every(pick => Number.isInteger(pick) && pick >= -1 && pick <= MAX_PICK)
+  const picks = known ? raw.picks : raw.cuts.map(() => -1)
+  const order = raw.cuts.map((_, i) => i).sort((a, b) => raw.cuts[a] - raw.cuts[b] || a - b)
   return {
     id: raw.id,
     kind: raw.kind,
@@ -158,7 +166,8 @@ function restorePlant(raw, now) {
     updatedAt: Math.min(raw.updatedAt, now),
     hydratedUntil: Math.min(raw.hydratedUntil, now + kind.hydrated),
     growthMs: Math.floor(raw.growthMs),
-    cuts: [...raw.cuts].sort((a, b) => a - b),
+    cuts: order.map(i => raw.cuts[i]),
+    picks: order.map(i => picks[i]),
     fedUntil: Math.min(raw.fedUntil, now + FED_MS),
     leanAt: clamp(raw.leanAt, -1, 1),
     turnedAt: Math.min(raw.turnedAt, now),
@@ -231,11 +240,15 @@ function water(plant, now) {
   return { change: { hydratedUntil: now + kind.hydrated }, coins: wasThirsty ? WATER_COINS : 0, done: true, message: `Watered. Good for ${plural(days, 'day')}.` }
 }
 
-/** Cuts the tallest tip. New growth must appear between cuts, so a plant can't be pruned to nothing. */
-function prune(plant) {
+/**
+ * Cuts one tip: the one chosen, counted among the plant's live tips, or the tallest when none is
+ * chosen. New growth must appear between cuts, so a plant can't be pruned to nothing.
+ */
+function prune(plant, now, garden, tip) {
   const nodes = nodeCount(plant)
   if (plant.cuts.length >= MAX_CUTS || plant.cuts.at(-1) >= nodes) return { done: false, message: 'Nothing new to prune yet.' }
-  return { change: { cuts: [...plant.cuts, nodes] }, coins: KINDS[plant.kind].clip, done: true, message: 'Pruned. New shoots will branch from the cut.' }
+  const pick = Number.isInteger(tip) && tip >= 0 ? Math.min(tip, MAX_PICK) : -1
+  return { change: { cuts: [...plant.cuts, nodes], picks: [...plant.picks, pick] }, coins: KINDS[plant.kind].clip, done: true, message: 'Pruned. New shoots will branch from the cut.' }
 }
 
 /** Turns the pot. The lean it had now points away from the light, and it grows back the other way. */
@@ -336,10 +349,10 @@ function shoo(garden, now) {
 
 /**
  * Runs one action on the garden. `plant` is a plant id, and when it is left out the action goes to
- * the plant that wants it most. `item` is what to buy. Returns the garden after, whether anything
+ * the plant that wants it most. `item` is what to buy, and `tip` is which tip to prune. Returns the garden after, whether anything
  * happened, a line to show, the coins gained or spent, and the plant it touched.
  */
-export function tend(garden, action, now, { plant: id = null, item = null } = {}) {
+export function tend(garden, action, now, { plant: id = null, item = null, tip = null } = {}) {
   if (action === 'buy') return buy(garden, item, now)
   if (action === 'shoo') return shoo(garden, now)
   if (action !== 'sell' && !own(CARE, action)) return fail(garden, `Actions are: ${ACTIONS.join(', ')}.`)
@@ -349,7 +362,7 @@ export function tend(garden, action, now, { plant: id = null, item = null } = {}
   if (action === 'sell') return sell(garden, index, now)
 
   const settled = settle(garden.plants[index], now)
-  const result = CARE[action](settled, now, garden)
+  const result = CARE[action](settled, now, garden, tip)
   if (!result.done) return fail(garden, result.message, settled.id)
   const coins = result.coins ?? 0
   const plants = garden.plants.map((plant, i) => (i === index ? { ...settled, ...result.change } : plant))

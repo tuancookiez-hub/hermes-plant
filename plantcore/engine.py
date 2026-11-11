@@ -25,6 +25,8 @@ BASE_NODES = 4
 NODE_RATE = 12
 MAX_NODES = 72
 MAX_CUTS = 240
+# A cut remembers which tip was chosen, as its place among the live tips, or -1 for the tallest.
+MAX_PICK = 63
 MAX_PLANTS = 6
 MAX_FERTILIZER = 9
 START_COINS = 20
@@ -115,6 +117,7 @@ def _new_plant(plant_id: int, kind: str, seed: int, now: int) -> Plant:
         "hydratedUntil": now + KINDS[kind]["hydrated"],
         "growthMs": 0,
         "cuts": [],
+        "picks": [],
         "fedUntil": 0,
         "leanAt": 0,
         "turnedAt": now,
@@ -190,6 +193,7 @@ def _from_single_plant(data: Any) -> Any:
                 "id": 1,
                 "kind": "leafy",
                 "cuts": [BASE_NODES + 2 * (node - BASE_NODES) if _whole(node) and node > BASE_NODES else node for node in raw["cuts"]],
+                "picks": [-1 for _ in raw["cuts"]],
                 "pot": _pot_for(raw["growthMs"]),
                 "pickedAt": 0,
             }
@@ -212,6 +216,12 @@ def _restore_plant(raw: Any, now: int) -> Plant | None:
         return None
     if raw["growthMs"] < 0 or not all(_whole(cut) and cut >= 0 for cut in cuts):
         return None
+    # Saves from before 1.2 have no picks: every one of their cuts took the tallest tip.
+    picks = raw.get("picks")
+    known = isinstance(picks, list) and len(picks) == len(cuts) and all(_whole(pick) and -1 <= pick <= MAX_PICK for pick in picks)
+    if not known:
+        picks = [-1 for _ in cuts]
+    order = sorted(range(len(cuts)), key=lambda i: (cuts[i], i))
     return {
         "id": int(raw["id"]),
         "kind": raw["kind"],
@@ -220,7 +230,8 @@ def _restore_plant(raw: Any, now: int) -> Plant | None:
         "updatedAt": min(raw["updatedAt"], now),
         "hydratedUntil": min(raw["hydratedUntil"], now + kind["hydrated"]),
         "growthMs": math.floor(raw["growthMs"]),
-        "cuts": sorted(int(cut) for cut in cuts),
+        "cuts": [int(cuts[i]) for i in order],
+        "picks": [int(picks[i]) for i in order],
         "fedUntil": min(raw["fedUntil"], now + FED_MS),
         "leanAt": _clamp(raw["leanAt"], -1, 1),
         "turnedAt": min(raw["turnedAt"], now),
@@ -319,12 +330,18 @@ def _water(plant: Plant, now: int, garden: Garden) -> dict[str, Any]:
     }
 
 
-def _prune(plant: Plant, now: int, garden: Garden) -> dict[str, Any]:
-    """Cut the tallest tip. New growth must appear between cuts, so a plant can't be pruned to nothing."""
+def _prune(plant: Plant, now: int, garden: Garden, tip: Any = None) -> dict[str, Any]:
+    """Cut one tip: the one chosen, counted among the live tips, or the tallest when none is chosen.
+
+    New growth must appear between cuts, so a plant can't be pruned to nothing.
+    """
     if not _can_prune(plant):
         return _no("Nothing new to prune yet.")
     return {
-        "change": {"cuts": [*plant["cuts"], node_count(plant)]},
+        "change": {
+            "cuts": [*plant["cuts"], node_count(plant)],
+            "picks": [*plant["picks"], min(int(tip), MAX_PICK) if _whole(tip) and tip >= 0 else -1],
+        },
         "coins": KINDS[plant["kind"]]["clip"],
         "done": True,
         "message": "Pruned. New shoots will branch from the cut.",
@@ -474,7 +491,9 @@ def _shoo(garden: Garden, now: int) -> dict[str, Any]:
     return {"garden": after, "done": True, "message": f"Shooed the bug away. +{_plural(BUG_COINS, 'coin')}.", "coins": BUG_COINS, "plant": plant}
 
 
-def tend(garden: Garden, action: str, now: int, plant: int | None = None, item: str | None = None) -> dict[str, Any]:
+def tend(
+    garden: Garden, action: str, now: int, plant: int | None = None, item: str | None = None, tip: int | None = None
+) -> dict[str, Any]:
     """Run one action on the garden. `plant` is a plant id, and when it is left out the action goes to
     the plant that wants it most. `item` is what to buy. Returns a dict with the garden after, `done`,
     a line to show (`message`), the coins gained or spent (`coins`) and the id of the plant it touched
@@ -497,7 +516,7 @@ def tend(garden: Garden, action: str, now: int, plant: int | None = None, item: 
         return _sell(garden, index, now)
 
     settled = settle(garden["plants"][index], now)
-    result = _CARE[action](settled, now, garden)
+    result = _prune(settled, now, garden, tip) if action == "prune" else _CARE[action](settled, now, garden)
     if not result["done"]:
         return _fail(garden, result["message"], settled["id"])
     coins = result.get("coins", 0)

@@ -20,7 +20,7 @@ You start with one plant and a few coins. Looking after plants earns coins, coin
 | Action | What it does |
 |---|---|
 | Water | Keeps the plant growing. How long it lasts depends on the species. Watering a thirsty plant earns 2 coins. |
-| Prune | Cuts the tallest tip, with a snip of the scissors. New shoots branch from the cut, and the clippings earn coins. |
+| Prune | Lights up every tip of the plant. Click the one to cut: the scissors snip, the piece drops away, and new shoots branch from the cut. The clippings earn coins. |
 | Rotate | Turns the pot. A plant leans toward the light over about ten days, and turning it lets it straighten. |
 | Fertilize | Uses one fertilizer: 8 hours of growth at once, then growth half again as fast for two days. |
 | Repot | Moves the plant to a bigger pot once its roots have filled this one. |
@@ -37,7 +37,7 @@ You start with one plant and a few coins. Looking after plants earns coins, coin
 | Cactus | 40 | 9 days | slow | Almost looks after itself. Sells for about twice as much. |
 | Little tree | 60 | 4 days | slow | Sells for three times as much. |
 
-Every plant has its own seed, so two plants of one species still grow differently, and pruning decides how each one branches.
+Every plant has its own seed, so two plants of one species still grow differently, and you decide how each one branches by choosing where to cut.
 
 ![The same plant left alone, pruned once, pruned often, and forgotten](docs/images/shapes.png)
 
@@ -69,7 +69,7 @@ Try "how is my garden doing?", "water whatever is thirsty" or "buy me a cactus".
 
 ## Commands and keys
 
-Every care action is in the command palette under **Houseplant**, along with **open care wheel**, **open the shop**, **shoo the bug away** and **show or hide the garden**. A care action from the palette goes to the plant that wants it most.
+Every care action is in the command palette under **Houseplant**, along with **open care wheel**, **open the shop**, **shoo the bug away** and **show or hide the garden**. A care action from the palette goes to the plant that wants it most, and a prune from the palette, a key or Hermes cuts the tallest tip.
 
 | Key | Action |
 |---|---|

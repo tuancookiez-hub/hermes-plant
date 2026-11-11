@@ -20,7 +20,7 @@ const icon = path => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none
 
 export const ACTIONS = [
   { id: 'water', label: 'Water', hint: view => `lasts ${KINDS[view.kind].hydrated / 86_400_000} days`, icon: icon('<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/><path d="M9.5 14.5a2.5 2.5 0 0 0 2.5 2.5"/>') },
-  { id: 'prune', label: 'Prune', hint: () => 'cut the tallest tip, earn coins', icon: icon('<circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M8 7.5 20 18M8 16.5 20 6"/>') },
+  { id: 'prune', label: 'Prune', hint: () => 'choose a tip to cut, earn coins', icon: icon('<circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M8 7.5 20 18M8 16.5 20 6"/>') },
   { id: 'rotate', label: 'Rotate', hint: () => 'turn it to the light', icon: icon('<path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 3v5h-5"/>') },
   { id: 'feed', label: 'Fertilize', hint: (view, garden) => `a burst of growth, ${garden.fertilizer} left`, icon: icon('<path d="M8 8h8l2 12H6z"/><path d="M9 8 8 4h8l-1 4"/><path d="M10 13h4"/>') },
   { id: 'repot', label: 'Repot', hint: () => 'a bigger pot, more room', icon: icon('<path d="M6 11h12l-1.5 9h-9z"/><path d="M4.5 8h15v3h-15z"/><path d="M12 8V4M12 4l-2 2M12 4l2 2"/>') },
@@ -93,6 +93,10 @@ const CSS = `
 .hp-snip{position:absolute;width:26px;height:26px;margin:-13px 0 0 -23px;animation:hp-snip 620ms ease-out 1 forwards}
 .hp-snip .hp-blade-a,.hp-snip .hp-blade-b{transform-origin:12px 12px;animation:hp-blade-a 300ms ease-in 120ms 1 both}
 .hp-snip .hp-blade-b{animation-name:hp-blade-b}
+.hp-tip{position:absolute;width:20px;height:20px;margin:-10px 0 0 -10px;padding:0;border-radius:50%;border:1.5px dashed ${INK};background:rgba(253,253,255,.88);box-shadow:0 1px 4px rgba(0,0,0,.3);cursor:pointer;pointer-events:auto;animation:hp-pulse 1.6s ease-in-out infinite}
+.hp-tip:hover,.hp-tip:focus-visible{background:${INK};border-style:solid;outline:2px solid ${PAPER};outline-offset:1px;animation:none}
+.hp-fall{position:absolute;pointer-events:none;animation:hp-branch 950ms cubic-bezier(.5,0,.9,.6) 170ms 1 forwards}
+.hp-fall svg{display:block;overflow:visible}
 .hp-clip{position:absolute;width:16px;height:11px;margin:-5px 0 0 -8px;opacity:0;animation:hp-clip 900ms ease-in 380ms 1 forwards}
 .hp-bug{position:absolute;width:20px;height:20px;margin:-10px 0 0 -10px;padding:0;border:0;background:transparent;cursor:pointer;pointer-events:auto;animation:hp-crawl 2.6s ease-in-out infinite}
 .hp-bug[hidden]{display:none}
@@ -109,10 +113,11 @@ const CSS = `
 @keyframes hp-snip{0%{opacity:0;transform:translateX(-10px)}18%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0;transform:translateX(-4px)}}
 @keyframes hp-blade-a{0%{transform:rotate(-16deg)}100%{transform:rotate(9deg)}}
 @keyframes hp-blade-b{0%{transform:rotate(16deg)}100%{transform:rotate(-9deg)}}
+@keyframes hp-branch{0%{opacity:1;transform:none}70%{opacity:1}100%{opacity:0;transform:translate(12px,74px) rotate(55deg)}}
 @keyframes hp-clip{0%{opacity:1;transform:none}100%{opacity:0;transform:translate(14px,58px) rotate(150deg)}}
 @keyframes hp-crawl{0%,100%{transform:translate(0,0) rotate(-8deg)}25%{transform:translate(3px,-2px) rotate(6deg)}50%{transform:translate(5px,1px) rotate(14deg)}75%{transform:translate(1px,2px) rotate(-2deg)}}
 @keyframes hp-fly{0%{opacity:1;transform:none}100%{opacity:0;transform:translate(46px,-70px) rotate(40deg) scale(.6)}}
-@media (prefers-reduced-motion: reduce){.hp-action,.hp-open .hp-action,.hp-message,.hp-shop,.hp-shopping .hp-shop{transition:none}.hp-plant:hover .hp-foliage,.hp-plant svg,.hp-plant .hp-foliage,.hp-plant.hp-needy::after,.hp-bug,.hp-purse.hp-paid{animation:none!important}.hp-drop,.hp-snip,.hp-clip,.hp-flown{display:none}.hp-float{animation-duration:1ms;animation-delay:1500ms;animation-fill-mode:both}}
+@media (prefers-reduced-motion: reduce){.hp-action,.hp-open .hp-action,.hp-message,.hp-shop,.hp-shopping .hp-shop{transition:none}.hp-plant:hover .hp-foliage,.hp-plant svg,.hp-plant .hp-foliage,.hp-plant.hp-needy::after,.hp-bug,.hp-purse.hp-paid{animation:none!important}.hp-drop,.hp-snip,.hp-clip,.hp-flown,.hp-fall{display:none}.hp-tip{animation:none}.hp-float{animation-duration:1ms;animation-delay:1500ms;animation-fill-mode:both}}
 `
 
 const make = (tag, className, html) => {
@@ -169,6 +174,7 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
   let stopMessage = null
   let stopArmed = null
   let hint = ''
+  let pruning = null
   const plants = new Map()
 
   const viewOf = id => garden.plants.find(plant => plant.id === id)
@@ -262,8 +268,11 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
     return { x: centerOf(id) - size / 2 + tip.x * size, y: HEIGHT / 2 - size / 2 + tip.y * size }
   }
 
-  /** Plays what an action looks like. `id` is the plant it touched, when there is one. */
-  const effect = (action, id, coins = 0) => {
+  /**
+   * Plays what an action looks like. `id` is the plant it touched, when there is one, and `at` is
+   * where a chosen tip was, for a cut.
+   */
+  const effect = (action, id, coins = 0, at = null) => {
     const entry = plants.get(id)
     const x = entry ? centerOf(id) : purse.offsetLeft - purse.offsetWidth / 2
     const size = sizes(garden.plants.length).plant
@@ -275,9 +284,20 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
       })
       pulse(entry.button, 'hp-done')
     } else if (action === 'prune' && entry) {
-      const tip = tipOf(id)
+      const tip = at ?? tipOf(id)
       flash(make('div', 'hp-snip', SCISSORS), tip.x, tip.y, 700)
-      flash(make('div', 'hp-clip', CLIPPING), tip.x, tip.y, 1400)
+      if (entry.prevSvg) {
+        // The cut piece: the plant as it was, clipped to a circle round the tip, dropping away.
+        const left = x - size / 2
+        const top = HEIGHT / 2 - size / 2
+        const piece = make('div', 'hp-fall', entry.prevSvg)
+        piece.style.width = piece.style.height = `${size}px`
+        piece.style.clipPath = `circle(${Math.round(size * 0.17)}px at ${tip.x - left}px ${tip.y - top}px)`
+        piece.style.transformOrigin = `${tip.x - left}px ${tip.y - top}px`
+        flash(piece, left, top, 1200)
+      } else {
+        flash(make('div', 'hp-clip', CLIPPING), tip.x, tip.y, 1400)
+      }
       pulse(entry.button, 'hp-cut')
     } else if (action === 'shoo' && bug.dataset.x) {
       flash(make('div', 'hp-flown', BUG), Number(bug.dataset.x), Number(bug.dataset.y), 800)
@@ -294,10 +314,60 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
     }
   }
 
-  const perform = (action, options) => {
+  const perform = (action, options, at) => {
     const result = onAction(action, options) ?? {}
-    if (result.done) effect(action, result.plant ?? options.plant, result.coins)
+    if (result.done) effect(action, result.plant ?? options.plant, result.coins, at)
     return result
+  }
+
+  const stopPruning = () => {
+    if (!pruning) return
+    for (const marker of pruning.markers) marker.remove()
+    pruning = null
+    hideMessage()
+  }
+
+  /** Puts a marker on every live tip of a plant. Clicking one cuts there. */
+  const startPruning = id => {
+    stopPruning()
+    const entry = plants.get(id)
+    const size = sizes(garden.plants.length).plant
+    const left = centerOf(id) - size / 2
+    const top = HEIGHT / 2 - size / 2
+    const tips = (entry?.button.firstElementChild?.dataset.tips ?? '').split(';').filter(Boolean).map(pair => pair.split(',').map(Number))
+    if (!tips.length) return false
+    const markers = tips.map(([fx, fy], i) => {
+      const marker = make('button', 'hp-tip')
+      const at = { x: left + fx * size, y: top + fy * size }
+      marker.dataset.hermesPlant = 'tip'
+      marker.setAttribute('aria-label', `Cut tip ${i + 1} of ${tips.length}`)
+      marker.style.left = `${at.x}px`
+      marker.style.top = `${at.y}px`
+      marker.addEventListener('click', () => {
+        stopPruning()
+        const result = perform('prune', { plant: id, tip: i }, at)
+        say(result.text, id)
+        plants.get(id)?.button.focus({ preventScroll: true })
+      })
+      marker.addEventListener('keydown', event => {
+        const step = { ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1 }[event.key]
+        if (step) {
+          event.preventDefault()
+          markers[(i + step + markers.length) % markers.length].focus()
+        } else if (event.key === 'Escape') {
+          event.preventDefault()
+          stopPruning()
+          plants.get(id)?.button.focus({ preventScroll: true })
+        }
+      })
+      return marker
+    })
+    box.append(...markers)
+    pruning = { id, markers }
+    say(tips.length > 1 ? 'Click a tip to cut it there.' : 'Click the tip to cut it.', id, 0)
+    // Start on the tallest tip, which is what a cut took before tips could be chosen.
+    markers[tips.reduce((best, tip, i) => (tip[1] < tips[best][1] ? i : best), 0)].focus({ preventScroll: true })
+    return true
   }
 
   const labelOf = action => {
@@ -331,6 +401,11 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
         return
       }
       disarm()
+      // Pruning asks where: the wheel closes and the plant's tips light up.
+      if (action.id === 'prune' && viewOf(id)?.canPrune) {
+        toggle(false, false)
+        if (startPruning(id)) return
+      }
       toggle(false, action.id !== 'sell')
       const result = perform(action.id, { plant: id })
       say(result.text, result.done && action.id === 'sell' ? anchor() : id)
@@ -370,6 +445,7 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
   }
 
   function toggle(open, focusPlant, id = active) {
+    stopPruning()
     hideMessage()
     disarm()
     if (open) {
@@ -423,6 +499,7 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
   function toggleShop(open) {
     if (open === isShopping()) return
     if (open) {
+      stopPruning()
       toggle(false, false)
       shopNote.textContent = garden.room < 1 ? 'The garden is full. Sell a plant to make room.' : 'Coins come from pruning, picking, bugs and watering a thirsty plant.'
       markShop()
@@ -495,6 +572,7 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
     'pointerdown',
     event => {
       if (box.contains(event.target)) return
+      stopPruning()
       if (isOpen()) toggle(false, false)
       toggleShop(false)
     },
@@ -517,6 +595,8 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
     /** `view` is what `describe` returns. `drawings` maps a plant id to `{ svg, label }`. */
     render(view, drawings) {
       garden = view
+      // The markers sit on the old drawing, so a redraw or a move ends the choosing.
+      if (pruning && (!viewOf(pruning.id) || drawings.get(pruning.id)?.svg !== plants.get(pruning.id)?.svg || view.plants.length !== plants.size)) stopPruning()
       const size = sizes(view.plants.length)
       box.style.setProperty('--hp-size', `${size.plant}px`)
       for (const [id, entry] of plants) {
@@ -527,7 +607,7 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
       for (const plant of view.plants) {
         let entry = plants.get(plant.id)
         if (!entry) {
-          entry = { button: makePlant(plant.id), lastTip: null, svg: '' }
+          entry = { button: makePlant(plant.id), lastTip: null, prevSvg: '', svg: '' }
           plants.set(plant.id, entry)
           box.insertBefore(entry.button, menu)
         }
@@ -535,6 +615,7 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
         if (drawing && drawing.svg !== entry.svg) {
           const old = entry.button.firstElementChild
           entry.lastTip = old ? { x: Number(old.dataset.tipX), y: Number(old.dataset.tipY) } : null
+          entry.prevSvg = entry.svg
           entry.button.innerHTML = drawing.svg
           entry.svg = drawing.svg
           entry.button.title = drawing.label
@@ -567,6 +648,7 @@ export function createOverlay({ ctx, position, onAction, onMoved }) {
     say,
     setHidden(hidden) {
       if (hidden) {
+        stopPruning()
         toggle(false, false)
         toggleShop(false)
       }

@@ -24,6 +24,8 @@ function random(seed) {
 const OLD_SAVES = [
   { v: 1, seed: 77, plantedAt: T0 - 9 * DAY, updatedAt: T0 - DAY, hydratedUntil: T0 + DAY, growthMs: 5 * DAY, cuts: [6, 9] },
   { v: 2, rev: 14, seed: 4242, plantedAt: T0 - 30 * DAY, updatedAt: T0 - 2 * HOUR, hydratedUntil: T0 + 2 * DAY, growthMs: 12 * DAY, cuts: [8, 15, 22], fedUntil: T0 + DAY, leanAt: 0.3, turnedAt: T0 - 3 * DAY, pot: 1 },
+  { v: 3, rev: 9, seed: 5, updatedAt: T0, coins: 31, fertilizer: 1, bugAt: T0 + HOUR, nextId: 3, plants: [{ id: 2, kind: 'fern', seed: 8, plantedAt: T0 - DAY, updatedAt: T0, hydratedUntil: T0 + DAY, growthMs: 3 * DAY, cuts: [9, 6, 6], fedUntil: 0, leanAt: 0, turnedAt: T0, pot: 1, pickedAt: 0 }] },
+  { v: 3, rev: 9, seed: 5, updatedAt: T0, coins: 31, fertilizer: 1, bugAt: T0 + HOUR, nextId: 3, plants: [{ id: 2, kind: 'leafy', seed: 8, plantedAt: T0 - DAY, updatedAt: T0, hydratedUntil: T0 + DAY, growthMs: 3 * DAY, cuts: [9, 6, 6], picks: [2, -1, 5], fedUntil: 0, leanAt: 0, turnedAt: T0, pot: 1, pickedAt: 0 }] },
   { v: 2, rev: 3, seed: 9, plantedAt: T0 - DAY, updatedAt: T0 - DAY, hydratedUntil: T0 - HOUR, growthMs: 0, cuts: [], fedUntil: 0, leanAt: 0, turnedAt: T0 - DAY, pot: 0 }
 ]
 
@@ -44,14 +46,17 @@ export function buildParity() {
       const pickRoll = rng()
       const plant = action === 'sell' || pickRoll < 0.5 ? (pickRoll < 0.04 ? 99 : garden.plants[Math.floor(rng() * garden.plants.length)].id) : null
       const item = action === 'buy' ? (rng() < 0.08 ? 'gnome' : SHOP_ITEMS[Math.floor(rng() * SHOP_ITEMS.length)]) : null
+      // Some cuts choose a tip, and now and then a tip that makes no sense.
+      const tipRoll = action === 'prune' ? rng() : 1
+      const tip = tipRoll < 0.5 ? Math.floor(rng() * 9) : tipRoll < 0.56 ? [-3, 2.5, 500, 'top'][Math.floor(rng() * 4)] : null
       let result = null
       if (action) {
-        const outcome = tend(garden, action, now, { item, plant })
+        const outcome = tend(garden, action, now, { item, plant, tip })
         garden = outcome.garden
         result = { coins: outcome.coins, done: outcome.done, message: outcome.message, plant: outcome.plant }
       }
       const view = describe(garden, now)
-      steps.push({ now, action, plant, item, result, garden, view, summary: summarize(view) })
+      steps.push({ now, action, plant, item, tip, result, garden, view, summary: summarize(view) })
     }
     scenarios.push({ start: T0, seed: seed * 7919, steps })
   }

@@ -33,7 +33,7 @@ def test_python_rules_match_desktop_rules(scenario):
     for index, step in enumerate(scenario["steps"]):
         where = f"step {index} ({step['action']})"
         if step["action"]:
-            outcome = engine.tend(garden, step["action"], step["now"], plant=step["plant"], item=step["item"])
+            outcome = engine.tend(garden, step["action"], step["now"], plant=step["plant"], item=step["item"], tip=step["tip"])
             garden = outcome["garden"]
             result = {key: outcome[key] for key in ("coins", "done", "message", "plant")}
             same(result, step["result"], where + " result")

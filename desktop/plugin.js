@@ -1,4 +1,4 @@
-// Hermes Plant 1.1.0, built from desktop-src/ (npm ci && npm run build). Do not edit.
+// Hermes Plant 1.2.0, built from desktop-src/ (npm ci && npm run build). Do not edit.
 
 // src/plugin.jsx
 import { useSyncExternalStore } from "react";
@@ -58,9 +58,9 @@ function grow(stem, rng, habit) {
     length: habit.segment * stem.vigor * (0.85 + rng() * 0.3)
   });
 }
-function cutTallest(stems, rng, habit) {
+function cutTip(stems, rng, habit, pick2) {
   const tips = stems.filter((stem) => !stem.cut);
-  const tallest = tips.reduce((best, stem) => pointOf(stem).y < pointOf(best).y ? stem : best);
+  const tallest = pick2 >= 0 ? tips[pick2 % tips.length] : tips.reduce((best, stem) => pointOf(stem).y < pointOf(best).y ? stem : best);
   const keep = Math.max(MIN_STEM, tallest.hold, tallest.segments.length - habit.cutBack);
   tallest.segments.length = Math.min(tallest.segments.length, keep);
   tallest.cut = true;
@@ -70,13 +70,13 @@ function cutTallest(stems, rng, habit) {
   grow(addStem(stems, tallest, angle - spread, vigor, tallest.rate, habit === HABITS.cactus), rng, habit);
   grow(addStem(stems, tallest, angle + spread, vigor, tallest.rate, habit === HABITS.cactus), rng, habit);
 }
-function branching({ seed, cuts }, nodes, habit) {
+function branching({ seed, cuts, picks }, nodes, habit) {
   const rng = random(seed);
   const stems = [];
   addStem(stems, null, UP + (rng() - 0.5) * 0.24, 1, 1);
   const side = rng() < 0.5 ? -1 : 1;
   const steps = Math.max(1, Math.floor(nodes / habit.every));
-  const pending = cuts.map((cut) => Math.floor(cut / habit.every));
+  const pending = cuts.map((cut, i) => ({ at: Math.floor(cut / habit.every), pick: picks?.[i] ?? -1 }));
   for (let step = 1; step <= steps; step++) {
     const tips = stems.filter((stem2) => !stem2.cut);
     const stem = nextTip(tips);
@@ -86,20 +86,14 @@ function branching({ seed, cuts }, nodes, habit) {
       const turn = (Math.floor(count / habit.shootEvery) % 2 ? 1 : -1) * side * (habit.turn + rng() * habit.turnSpan);
       grow(addStem(stems, stem, stem.segments.at(-1).angle + turn, Math.max(0.6, stem.vigor * habit.shootVigor), stem.rate * habit.shootRate, true), rng, habit);
     }
-    while (pending[0] <= step) {
-      pending.shift();
-      cutTallest(stems, rng, habit);
-    }
+    while (pending[0]?.at <= step) cutTip(stems, rng, habit, pending.shift().pick);
   }
-  while (pending.length) {
-    pending.shift();
-    cutTallest(stems, rng, habit);
-  }
+  while (pending.length) cutTip(stems, rng, habit, pending.shift().pick);
   return { side, stems };
 }
 var FERN_SEGMENT = 4.2;
 var MAX_FRONDS = 12;
-function fern({ seed, cuts }, nodes) {
+function fern({ seed, cuts, picks }, nodes) {
   const rng = random(seed);
   const side = rng() < 0.5 ? -1 : 1;
   const count = Math.min(MAX_FRONDS, 3 + Math.floor(nodes / 10) + cuts.length);
@@ -119,12 +113,15 @@ function fern({ seed, cuts }, nodes) {
       }
     }
   }
-  const recent = cuts.filter((cut) => nodes - cut < 6).length;
-  const byLength = [...fronds].sort((a, b) => b.length - a.length);
-  for (let i = 0; i < Math.min(recent, byLength.length); i++) {
-    byLength[i].length = Math.min(byLength[i].length, 2 + i);
-    byLength[i].cut = true;
-  }
+  cuts.forEach((cut, i) => {
+    if (nodes - cut >= 6) return;
+    const live = fronds.filter((frond2) => !frond2.cut && frond2.length > 0);
+    if (live.length < 2) return;
+    const pick2 = picks?.[i] ?? -1;
+    const frond = pick2 >= 0 ? live[pick2 % live.length] : live.reduce((best, item) => item.length > best.length ? item : best);
+    frond.length = Math.min(frond.length, 2);
+    frond.cut = true;
+  });
   for (const frond of fronds) {
     let angle = frond.angle;
     const out = Math.cos(frond.angle) < 0 ? -1 : 1;
@@ -348,9 +345,12 @@ function drawPlant(plant, view, uid = "hp") {
   const frame = Math.min(VIEW, Math.max(MIN_FRAME, VIEW - (pot.top + 1 + box.top * scale) + 3, reach));
   const frameX = Math.min(VIEW - frame, Math.max(0, cx - frame / 2));
   const highest = laid.tips.reduce((best, tip) => tip.y < best.y ? tip : best, { x: 0, y: box.top / 2 });
-  const tipX = (cx + highest.x * scale - frameX) / frame;
-  const tipY = (pot.top + 1 + highest.y * scale - (VIEW - frame)) / frame;
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(frameX)} ${n(VIEW - frame)} ${n(frame)} ${n(frame)}" width="100%" height="100%" aria-hidden="true" data-tip-x="${tipX.toFixed(3)}" data-tip-y="${tipY.toFixed(3)}" stroke="${INK}" stroke-width="${LINE}" stroke-linecap="round" stroke-linejoin="round"><defs><g id="${uid}-leaf">${LEAF}</g><g id="${uid}-small">${SMALL_LEAF}</g><g id="${uid}-limp">${LIMP_LEAF}</g><g id="${uid}-round">${ROUND_LEAF}</g><g id="${uid}-flower">${FLOWER}</g><g id="${uid}-bud">${BUD}</g></defs>` + pot.back + `<g class="hp-foliage"><g transform="translate(${n(cx)} ${n(pot.top + 1)}) scale(${Math.round(scale * 1e3) / 1e3})" fill="none">${stems}${leaves}${tips}</g></g>` + pot.front + fed + "</svg>";
+  const across = (x) => (cx + x * scale - frameX) / frame;
+  const down = (y) => (pot.top + 1 + y * scale - (VIEW - frame)) / frame;
+  const tipX = across(highest.x);
+  const tipY = down(highest.y);
+  const allTips = laid.tips.map((tip) => `${across(tip.x).toFixed(3)},${down(tip.y).toFixed(3)}`).join(";");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(frameX)} ${n(VIEW - frame)} ${n(frame)} ${n(frame)}" width="100%" height="100%" aria-hidden="true" data-tip-x="${tipX.toFixed(3)}" data-tip-y="${tipY.toFixed(3)}" data-tips="${allTips}" stroke="${INK}" stroke-width="${LINE}" stroke-linecap="round" stroke-linejoin="round"><defs><g id="${uid}-leaf">${LEAF}</g><g id="${uid}-small">${SMALL_LEAF}</g><g id="${uid}-limp">${LIMP_LEAF}</g><g id="${uid}-round">${ROUND_LEAF}</g><g id="${uid}-flower">${FLOWER}</g><g id="${uid}-bud">${BUD}</g></defs>` + pot.back + `<g class="hp-foliage"><g transform="translate(${n(cx)} ${n(pot.top + 1)}) scale(${Math.round(scale * 1e3) / 1e3})" fill="none">${stems}${leaves}${tips}</g></g>` + pot.front + fed + "</svg>";
 }
 function drawSample(kind, uid) {
   const plant = { kind, seed: 21, cuts: kind === "bonsai" ? [14] : [] };
@@ -371,6 +371,7 @@ var BASE_NODES = 4;
 var NODE_RATE = 12;
 var MAX_NODES = 72;
 var MAX_CUTS = 240;
+var MAX_PICK = 63;
 var MAX_PLANTS = 6;
 var MAX_FERTILIZER = 9;
 var START_COINS = 20;
@@ -416,6 +417,7 @@ function newPlant(id, kind, seed, now) {
     hydratedUntil: now + KINDS[kind].hydrated,
     growthMs: 0,
     cuts: [],
+    picks: [],
     fedUntil: 0,
     leanAt: 0,
     turnedAt: now,
@@ -472,6 +474,7 @@ function fromSinglePlant(input) {
         id: 1,
         kind: "leafy",
         cuts: raw.cuts.map((node) => Number.isInteger(node) && node > BASE_NODES ? BASE_NODES + 2 * (node - BASE_NODES) : node),
+        picks: raw.cuts.map(() => -1),
         pot: potFor(raw.growthMs),
         pickedAt: 0
       }
@@ -486,6 +489,9 @@ function restorePlant(raw, now) {
   if (!numbers.every(Number.isFinite)) return null;
   if (!Number.isInteger(raw.pot) || raw.pot < 0 || raw.pot >= POTS.length) return null;
   if (raw.growthMs < 0 || !raw.cuts.every((n2) => Number.isInteger(n2) && n2 >= 0)) return null;
+  const known = Array.isArray(raw.picks) && raw.picks.length === raw.cuts.length && raw.picks.every((pick2) => Number.isInteger(pick2) && pick2 >= -1 && pick2 <= MAX_PICK);
+  const picks = known ? raw.picks : raw.cuts.map(() => -1);
+  const order = raw.cuts.map((_, i) => i).sort((a, b) => raw.cuts[a] - raw.cuts[b] || a - b);
   return {
     id: raw.id,
     kind: raw.kind,
@@ -494,7 +500,8 @@ function restorePlant(raw, now) {
     updatedAt: Math.min(raw.updatedAt, now),
     hydratedUntil: Math.min(raw.hydratedUntil, now + kind.hydrated),
     growthMs: Math.floor(raw.growthMs),
-    cuts: [...raw.cuts].sort((a, b) => a - b),
+    cuts: order.map((i) => raw.cuts[i]),
+    picks: order.map((i) => picks[i]),
     fedUntil: Math.min(raw.fedUntil, now + FED_MS),
     leanAt: clamp(raw.leanAt, -1, 1),
     turnedAt: Math.min(raw.turnedAt, now),
@@ -547,10 +554,11 @@ function water(plant, now) {
   const days = kind.hydrated / DAY;
   return { change: { hydratedUntil: now + kind.hydrated }, coins: wasThirsty ? WATER_COINS : 0, done: true, message: `Watered. Good for ${plural(days, "day")}.` };
 }
-function prune(plant) {
+function prune(plant, now, garden, tip) {
   const nodes = nodeCount(plant);
   if (plant.cuts.length >= MAX_CUTS || plant.cuts.at(-1) >= nodes) return { done: false, message: "Nothing new to prune yet." };
-  return { change: { cuts: [...plant.cuts, nodes] }, coins: KINDS[plant.kind].clip, done: true, message: "Pruned. New shoots will branch from the cut." };
+  const pick2 = Number.isInteger(tip) && tip >= 0 ? Math.min(tip, MAX_PICK) : -1;
+  return { change: { cuts: [...plant.cuts, nodes], picks: [...plant.picks, pick2] }, coins: KINDS[plant.kind].clip, done: true, message: "Pruned. New shoots will branch from the cut." };
 }
 function rotate(plant, now) {
   return { change: { leanAt: -leanOf(plant, now), turnedAt: now }, done: true, message: "Turned the pot. It will straighten up." };
@@ -631,7 +639,7 @@ function shoo(garden, now) {
   next.bugAt = nextBug(garden.seed, next.rev, now);
   return { garden: next, done: true, message: `Shooed the bug away. +${plural(BUG_COINS, "coin")}.`, coins: BUG_COINS, plant };
 }
-function tend(garden, action, now, { plant: id = null, item = null } = {}) {
+function tend(garden, action, now, { plant: id = null, item = null, tip = null } = {}) {
   if (action === "buy") return buy(garden, item, now);
   if (action === "shoo") return shoo(garden, now);
   if (action !== "sell" && !own(CARE, action)) return fail(garden, `Actions are: ${ACTIONS.join(", ")}.`);
@@ -640,7 +648,7 @@ function tend(garden, action, now, { plant: id = null, item = null } = {}) {
   if (index < 0) return fail(garden, "There is no such plant.");
   if (action === "sell") return sell(garden, index, now);
   const settled = settle(garden.plants[index], now);
-  const result = CARE[action](settled, now, garden);
+  const result = CARE[action](settled, now, garden, tip);
   if (!result.done) return fail(garden, result.message, settled.id);
   const coins = result.coins ?? 0;
   const plants = garden.plants.map((plant, i) => i === index ? { ...settled, ...result.change } : plant);
@@ -730,7 +738,7 @@ var sizes = (count) => count <= 3 ? { plant: 96, step: 82 } : { plant: 78, step:
 var icon = (path) => `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${path}</svg>`;
 var ACTIONS2 = [
   { id: "water", label: "Water", hint: (view) => `lasts ${KINDS[view.kind].hydrated / 864e5} days`, icon: icon('<path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z"/><path d="M9.5 14.5a2.5 2.5 0 0 0 2.5 2.5"/>') },
-  { id: "prune", label: "Prune", hint: () => "cut the tallest tip, earn coins", icon: icon('<circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M8 7.5 20 18M8 16.5 20 6"/>') },
+  { id: "prune", label: "Prune", hint: () => "choose a tip to cut, earn coins", icon: icon('<circle cx="6" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M8 7.5 20 18M8 16.5 20 6"/>') },
   { id: "rotate", label: "Rotate", hint: () => "turn it to the light", icon: icon('<path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 3v5h-5"/>') },
   { id: "feed", label: "Fertilize", hint: (view, garden) => `a burst of growth, ${garden.fertilizer} left`, icon: icon('<path d="M8 8h8l2 12H6z"/><path d="M9 8 8 4h8l-1 4"/><path d="M10 13h4"/>') },
   { id: "repot", label: "Repot", hint: () => "a bigger pot, more room", icon: icon('<path d="M6 11h12l-1.5 9h-9z"/><path d="M4.5 8h15v3h-15z"/><path d="M12 8V4M12 4l-2 2M12 4l2 2"/>') },
@@ -793,6 +801,10 @@ var CSS = `
 .hp-snip{position:absolute;width:26px;height:26px;margin:-13px 0 0 -23px;animation:hp-snip 620ms ease-out 1 forwards}
 .hp-snip .hp-blade-a,.hp-snip .hp-blade-b{transform-origin:12px 12px;animation:hp-blade-a 300ms ease-in 120ms 1 both}
 .hp-snip .hp-blade-b{animation-name:hp-blade-b}
+.hp-tip{position:absolute;width:20px;height:20px;margin:-10px 0 0 -10px;padding:0;border-radius:50%;border:1.5px dashed ${INK};background:rgba(253,253,255,.88);box-shadow:0 1px 4px rgba(0,0,0,.3);cursor:pointer;pointer-events:auto;animation:hp-pulse 1.6s ease-in-out infinite}
+.hp-tip:hover,.hp-tip:focus-visible{background:${INK};border-style:solid;outline:2px solid ${PAPER};outline-offset:1px;animation:none}
+.hp-fall{position:absolute;pointer-events:none;animation:hp-branch 950ms cubic-bezier(.5,0,.9,.6) 170ms 1 forwards}
+.hp-fall svg{display:block;overflow:visible}
 .hp-clip{position:absolute;width:16px;height:11px;margin:-5px 0 0 -8px;opacity:0;animation:hp-clip 900ms ease-in 380ms 1 forwards}
 .hp-bug{position:absolute;width:20px;height:20px;margin:-10px 0 0 -10px;padding:0;border:0;background:transparent;cursor:pointer;pointer-events:auto;animation:hp-crawl 2.6s ease-in-out infinite}
 .hp-bug[hidden]{display:none}
@@ -809,10 +821,11 @@ var CSS = `
 @keyframes hp-snip{0%{opacity:0;transform:translateX(-10px)}18%{opacity:1;transform:none}75%{opacity:1}100%{opacity:0;transform:translateX(-4px)}}
 @keyframes hp-blade-a{0%{transform:rotate(-16deg)}100%{transform:rotate(9deg)}}
 @keyframes hp-blade-b{0%{transform:rotate(16deg)}100%{transform:rotate(-9deg)}}
+@keyframes hp-branch{0%{opacity:1;transform:none}70%{opacity:1}100%{opacity:0;transform:translate(12px,74px) rotate(55deg)}}
 @keyframes hp-clip{0%{opacity:1;transform:none}100%{opacity:0;transform:translate(14px,58px) rotate(150deg)}}
 @keyframes hp-crawl{0%,100%{transform:translate(0,0) rotate(-8deg)}25%{transform:translate(3px,-2px) rotate(6deg)}50%{transform:translate(5px,1px) rotate(14deg)}75%{transform:translate(1px,2px) rotate(-2deg)}}
 @keyframes hp-fly{0%{opacity:1;transform:none}100%{opacity:0;transform:translate(46px,-70px) rotate(40deg) scale(.6)}}
-@media (prefers-reduced-motion: reduce){.hp-action,.hp-open .hp-action,.hp-message,.hp-shop,.hp-shopping .hp-shop{transition:none}.hp-plant:hover .hp-foliage,.hp-plant svg,.hp-plant .hp-foliage,.hp-plant.hp-needy::after,.hp-bug,.hp-purse.hp-paid{animation:none!important}.hp-drop,.hp-snip,.hp-clip,.hp-flown{display:none}.hp-float{animation-duration:1ms;animation-delay:1500ms;animation-fill-mode:both}}
+@media (prefers-reduced-motion: reduce){.hp-action,.hp-open .hp-action,.hp-message,.hp-shop,.hp-shopping .hp-shop{transition:none}.hp-plant:hover .hp-foliage,.hp-plant svg,.hp-plant .hp-foliage,.hp-plant.hp-needy::after,.hp-bug,.hp-purse.hp-paid{animation:none!important}.hp-drop,.hp-snip,.hp-clip,.hp-flown,.hp-fall{display:none}.hp-tip{animation:none}.hp-float{animation-duration:1ms;animation-delay:1500ms;animation-fill-mode:both}}
 `;
 var make = (tag, className, html) => {
   const node = document.createElement(tag);
@@ -856,6 +869,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
   let stopMessage = null;
   let stopArmed = null;
   let hint = "";
+  let pruning = null;
   const plants = /* @__PURE__ */ new Map();
   const viewOf = (id) => garden.plants.find((plant) => plant.id === id);
   const width = () => 2 * EDGE + Math.max(0, garden.plants.length - 1) * sizes(garden.plants.length).step;
@@ -931,7 +945,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
     const tip = entry?.lastTip ?? { x: 0.5, y: 0.2 };
     return { x: centerOf(id) - size / 2 + tip.x * size, y: HEIGHT / 2 - size / 2 + tip.y * size };
   };
-  const effect = (action, id, coins = 0) => {
+  const effect = (action, id, coins = 0, at = null) => {
     const entry = plants.get(id);
     const x = entry ? centerOf(id) : purse.offsetLeft - purse.offsetWidth / 2;
     const size = sizes(garden.plants.length).plant;
@@ -944,9 +958,19 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
       });
       pulse(entry.button, "hp-done");
     } else if (action === "prune" && entry) {
-      const tip = tipOf(id);
+      const tip = at ?? tipOf(id);
       flash(make("div", "hp-snip", SCISSORS), tip.x, tip.y, 700);
-      flash(make("div", "hp-clip", CLIPPING), tip.x, tip.y, 1400);
+      if (entry.prevSvg) {
+        const left = x - size / 2;
+        const top = HEIGHT / 2 - size / 2;
+        const piece = make("div", "hp-fall", entry.prevSvg);
+        piece.style.width = piece.style.height = `${size}px`;
+        piece.style.clipPath = `circle(${Math.round(size * 0.17)}px at ${tip.x - left}px ${tip.y - top}px)`;
+        piece.style.transformOrigin = `${tip.x - left}px ${tip.y - top}px`;
+        flash(piece, left, top, 1200);
+      } else {
+        flash(make("div", "hp-clip", CLIPPING), tip.x, tip.y, 1400);
+      }
       pulse(entry.button, "hp-cut");
     } else if (action === "shoo" && bug.dataset.x) {
       flash(make("div", "hp-flown", BUG), Number(bug.dataset.x), Number(bug.dataset.y), 800);
@@ -962,10 +986,56 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
       pulse(purse, "hp-paid");
     }
   };
-  const perform = (action, options) => {
+  const perform = (action, options, at) => {
     const result = onAction(action, options) ?? {};
-    if (result.done) effect(action, result.plant ?? options.plant, result.coins);
+    if (result.done) effect(action, result.plant ?? options.plant, result.coins, at);
     return result;
+  };
+  const stopPruning = () => {
+    if (!pruning) return;
+    for (const marker of pruning.markers) marker.remove();
+    pruning = null;
+    hideMessage();
+  };
+  const startPruning = (id) => {
+    stopPruning();
+    const entry = plants.get(id);
+    const size = sizes(garden.plants.length).plant;
+    const left = centerOf(id) - size / 2;
+    const top = HEIGHT / 2 - size / 2;
+    const tips = (entry?.button.firstElementChild?.dataset.tips ?? "").split(";").filter(Boolean).map((pair) => pair.split(",").map(Number));
+    if (!tips.length) return false;
+    const markers = tips.map(([fx, fy], i) => {
+      const marker = make("button", "hp-tip");
+      const at = { x: left + fx * size, y: top + fy * size };
+      marker.dataset.hermesPlant = "tip";
+      marker.setAttribute("aria-label", `Cut tip ${i + 1} of ${tips.length}`);
+      marker.style.left = `${at.x}px`;
+      marker.style.top = `${at.y}px`;
+      marker.addEventListener("click", () => {
+        stopPruning();
+        const result = perform("prune", { plant: id, tip: i }, at);
+        say(result.text, id);
+        plants.get(id)?.button.focus({ preventScroll: true });
+      });
+      marker.addEventListener("keydown", (event) => {
+        const step = { ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1, ArrowUp: -1 }[event.key];
+        if (step) {
+          event.preventDefault();
+          markers[(i + step + markers.length) % markers.length].focus();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          stopPruning();
+          plants.get(id)?.button.focus({ preventScroll: true });
+        }
+      });
+      return marker;
+    });
+    box.append(...markers);
+    pruning = { id, markers };
+    say(tips.length > 1 ? "Click a tip to cut it there." : "Click the tip to cut it.", id, 0);
+    markers[tips.reduce((best, tip, i) => tip[1] < tips[best][1] ? i : best, 0)].focus({ preventScroll: true });
+    return true;
   };
   const labelOf = (action) => {
     const view = viewOf(active);
@@ -996,6 +1066,10 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
         return;
       }
       disarm();
+      if (action.id === "prune" && viewOf(id)?.canPrune) {
+        toggle(false, false);
+        if (startPruning(id)) return;
+      }
       toggle(false, action.id !== "sell");
       const result = perform(action.id, { plant: id });
       say(result.text, result.done && action.id === "sell" ? anchor() : id);
@@ -1032,6 +1106,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
     }
   };
   function toggle(open, focusPlant, id = active) {
+    stopPruning();
     hideMessage();
     disarm();
     if (open) {
@@ -1078,6 +1153,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
   function toggleShop(open) {
     if (open === isShopping()) return;
     if (open) {
+      stopPruning();
       toggle(false, false);
       shopNote.textContent = garden.room < 1 ? "The garden is full. Sell a plant to make room." : "Coins come from pruning, picking, bugs and watering a thirsty plant.";
       markShop();
@@ -1144,6 +1220,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
     "pointerdown",
     (event) => {
       if (box.contains(event.target)) return;
+      stopPruning();
       if (isOpen()) toggle(false, false);
       toggleShop(false);
     },
@@ -1164,6 +1241,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
     /** `view` is what `describe` returns. `drawings` maps a plant id to `{ svg, label }`. */
     render(view, drawings) {
       garden = view;
+      if (pruning && (!viewOf(pruning.id) || drawings.get(pruning.id)?.svg !== plants.get(pruning.id)?.svg || view.plants.length !== plants.size)) stopPruning();
       const size = sizes(view.plants.length);
       box.style.setProperty("--hp-size", `${size.plant}px`);
       for (const [id, entry] of plants) {
@@ -1174,7 +1252,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
       for (const plant of view.plants) {
         let entry = plants.get(plant.id);
         if (!entry) {
-          entry = { button: makePlant(plant.id), lastTip: null, svg: "" };
+          entry = { button: makePlant(plant.id), lastTip: null, prevSvg: "", svg: "" };
           plants.set(plant.id, entry);
           box.insertBefore(entry.button, menu);
         }
@@ -1182,6 +1260,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
         if (drawing && drawing.svg !== entry.svg) {
           const old = entry.button.firstElementChild;
           entry.lastTip = old ? { x: Number(old.dataset.tipX), y: Number(old.dataset.tipY) } : null;
+          entry.prevSvg = entry.svg;
           entry.button.innerHTML = drawing.svg;
           entry.svg = drawing.svg;
           entry.button.title = drawing.label;
@@ -1214,6 +1293,7 @@ function createOverlay({ ctx, position, onAction, onMoved }) {
     say,
     setHidden(hidden) {
       if (hidden) {
+        stopPruning();
         toggle(false, false);
         toggleShop(false);
       }

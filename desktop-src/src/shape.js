@@ -68,9 +68,10 @@ function grow(stem, rng, habit) {
   })
 }
 
-function cutTallest(stems, rng, habit) {
+/** Cuts one live tip: the `pick`-th in the order they grew, or the tallest when `pick` is -1. */
+function cutTip(stems, rng, habit, pick) {
   const tips = stems.filter(stem => !stem.cut)
-  const tallest = tips.reduce((best, stem) => (pointOf(stem).y < pointOf(best).y ? stem : best))
+  const tallest = pick >= 0 ? tips[pick % tips.length] : tips.reduce((best, stem) => (pointOf(stem).y < pointOf(best).y ? stem : best))
   const keep = Math.max(MIN_STEM, tallest.hold, tallest.segments.length - habit.cutBack)
   tallest.segments.length = Math.min(tallest.segments.length, keep)
   tallest.cut = true
@@ -81,14 +82,14 @@ function cutTallest(stems, rng, habit) {
   grow(addStem(stems, tallest, angle + spread, vigor, tallest.rate, habit === HABITS.cactus), rng, habit)
 }
 
-/** A plant left alone grows tall with a few side shoots. Each cut stops the tallest tip and starts two more. */
-function branching({ seed, cuts }, nodes, habit) {
+/** A plant left alone grows tall with a few side shoots. Each cut stops one tip and starts two more. */
+function branching({ seed, cuts, picks }, nodes, habit) {
   const rng = random(seed)
   const stems = []
   addStem(stems, null, UP + (rng() - 0.5) * 0.24, 1, 1)
   const side = rng() < 0.5 ? -1 : 1
   const steps = Math.max(1, Math.floor(nodes / habit.every))
-  const pending = cuts.map(cut => Math.floor(cut / habit.every))
+  const pending = cuts.map((cut, i) => ({ at: Math.floor(cut / habit.every), pick: picks?.[i] ?? -1 }))
   for (let step = 1; step <= steps; step++) {
     const tips = stems.filter(stem => !stem.cut)
     const stem = nextTip(tips)
@@ -98,15 +99,9 @@ function branching({ seed, cuts }, nodes, habit) {
       const turn = (Math.floor(count / habit.shootEvery) % 2 ? 1 : -1) * side * (habit.turn + rng() * habit.turnSpan)
       grow(addStem(stems, stem, stem.segments.at(-1).angle + turn, Math.max(0.6, stem.vigor * habit.shootVigor), stem.rate * habit.shootRate, true), rng, habit)
     }
-    while (pending[0] <= step) {
-      pending.shift()
-      cutTallest(stems, rng, habit)
-    }
+    while (pending[0]?.at <= step) cutTip(stems, rng, habit, pending.shift().pick)
   }
-  while (pending.length) {
-    pending.shift()
-    cutTallest(stems, rng, habit)
-  }
+  while (pending.length) cutTip(stems, rng, habit, pending.shift().pick)
   return { side, stems }
 }
 
@@ -115,9 +110,10 @@ const MAX_FRONDS = 12
 
 /**
  * A fern has no trunk. Fronds rise from the crown and arch outward under their own weight. Each cut
- * takes the longest frond back to a stub and adds a new one, so a pruned fern is fuller and lower.
+ * takes a frond back to a stub (the chosen one, or the longest) and adds a new one, so a pruned fern
+ * is fuller and lower.
  */
-function fern({ seed, cuts }, nodes) {
+function fern({ seed, cuts, picks }, nodes) {
   const rng = random(seed)
   const side = rng() < 0.5 ? -1 : 1
   const count = Math.min(MAX_FRONDS, 3 + Math.floor(nodes / 10) + cuts.length)
@@ -139,12 +135,16 @@ function fern({ seed, cuts }, nodes) {
       }
     }
   }
-  const recent = cuts.filter(cut => nodes - cut < 6).length
-  const byLength = [...fronds].sort((a, b) => b.length - a.length)
-  for (let i = 0; i < Math.min(recent, byLength.length); i++) {
-    byLength[i].length = Math.min(byLength[i].length, 2 + i)
-    byLength[i].cut = true
-  }
+  // Only recent cuts still show as stubs. Older ones have grown back.
+  cuts.forEach((cut, i) => {
+    if (nodes - cut >= 6) return
+    const live = fronds.filter(frond => !frond.cut && frond.length > 0)
+    if (live.length < 2) return
+    const pick = picks?.[i] ?? -1
+    const frond = pick >= 0 ? live[pick % live.length] : live.reduce((best, item) => (item.length > best.length ? item : best))
+    frond.length = Math.min(frond.length, 2)
+    frond.cut = true
+  })
   for (const frond of fronds) {
     let angle = frond.angle
     const out = Math.cos(frond.angle) < 0 ? -1 : 1
