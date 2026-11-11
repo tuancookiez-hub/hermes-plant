@@ -1,98 +1,194 @@
-// The plant's rules. Pure functions over a small JSON record. plantcore/engine.py applies the same
+// The garden's rules. Pure functions over a small JSON record. plantcore/engine.py applies the same
 // rules for the agent tools, and test/parity.json keeps the two in step. Growth is worked out from
-// timestamps when the plant is read. Nothing simulates in the background.
+// timestamps when the garden is read. Nothing simulates in the background.
 
 export const HOUR = 3_600_000
 export const DAY = 24 * HOUR
 
-export const HYDRATED_MS = 3 * DAY
-export const THIRSTY_MS = DAY
 export const DROOP_FULL_MS = 3 * DAY
 export const FED_MS = 2 * DAY
+export const FEED_BOOST_MS = 8 * HOUR
 export const LEAN_MS = 10 * DAY
 export const LEAN_NOTICE = 0.6
 export const REPOT_READY = 0.8
+export const PICK_MS = 2 * DAY
 export const BASE_NODES = 4
-export const NODE_RATE = 6
+export const NODE_RATE = 12
+export const MAX_NODES = 72
 export const MAX_CUTS = 240
+export const MAX_PLANTS = 6
+export const MAX_FERTILIZER = 9
+export const START_COINS = 20
+export const START_FERTILIZER = 2
+export const FERTILIZER_PRICE = 8
+export const WATER_COINS = 2
+export const BUG_COINS = 2
+export const PICK_COINS = 12
+export const BUG_MIN_MS = 3 * HOUR
+export const BUG_SPAN_MS = 6 * HOUR
+
+/**
+ * The species. `rate` is growth speed in percent, `worth` is a percent applied to what a plant sells
+ * for, and `clip` is the coins a pruning earns. `last` names the final stage.
+ */
+export const KINDS = {
+  leafy: { name: 'leafy plant', price: 15, hydrated: 3 * DAY, thirsty: DAY, rate: 100, worth: 100, clip: 2, last: 'flowering' },
+  fern: { name: 'fern', price: 25, hydrated: 2 * DAY, thirsty: 12 * HOUR, rate: 130, worth: 120, clip: 2, last: 'lush' },
+  cactus: { name: 'cactus', price: 40, hydrated: 9 * DAY, thirsty: 2 * DAY, rate: 60, worth: 220, clip: 4, last: 'flowering' },
+  bonsai: { name: 'little tree', price: 60, hydrated: 4 * DAY, thirsty: DAY, rate: 80, worth: 300, clip: 5, last: 'blossoming' }
+}
+export const KIND_IDS = ['leafy', 'fern', 'cactus', 'bonsai']
 
 /** Each pot holds growth up to `days`. The last pot has no limit. */
 export const POTS = [
-  { name: 'seedling pot', days: 7 },
-  { name: 'small pot', days: 21 },
-  { name: 'medium pot', days: 45 },
+  { name: 'seedling pot', days: 1 },
+  { name: 'small pot', days: 4 },
+  { name: 'medium pot', days: 10 },
   { name: 'large pot', days: null }
 ]
 
+/** Stage 3 is named by the species. */
 export const STAGES = [
-  { name: 'sapling', days: 0 },
-  { name: 'young plant', days: 7 },
-  { name: 'mature plant', days: 21 },
-  { name: 'flowering', days: 45 }
+  { name: 'seedling', days: 0 },
+  { name: 'young', days: 1 },
+  { name: 'grown', days: 4 },
+  { name: null, days: 10 }
 ]
 
+const own = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : undefined)
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value))
-const nodesAt = growthMs => BASE_NODES + Math.floor(NODE_RATE * Math.sqrt(growthMs / DAY))
+const nodesAt = growthMs => Math.min(MAX_NODES, BASE_NODES + Math.floor(NODE_RATE * Math.sqrt(growthMs / DAY)))
+const potFor = growthMs => POTS.findIndex(pot => pot.days === null || growthMs < pot.days * DAY)
+const stageOf = growthMs => STAGES.findLastIndex(stage => growthMs >= stage.days * DAY)
+const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`
 
-export function createPlant(now, seed) {
+function newPlant(id, kind, seed, now) {
   return {
-    v: 2,
-    rev: 1,
+    id,
+    kind,
     seed: seed >>> 0,
     plantedAt: now,
     updatedAt: now,
-    hydratedUntil: now + HYDRATED_MS,
+    hydratedUntil: now + KINDS[kind].hydrated,
     growthMs: 0,
     cuts: [],
     fedUntil: 0,
     leanAt: 0,
     turnedAt: now,
-    pot: 0
+    pot: 0,
+    pickedAt: 0
   }
 }
 
-/** Version 1 grew a node every 12 hours and had no pots, feeding or leaning. */
-function upgrade(raw, now) {
+/** When the next bug lands. It depends only on the garden's seed and revision, so both engines agree. */
+const nextBug = (seed, rev, now) => now + BUG_MIN_MS + (((Math.imul(rev, 0x9e3779b1) + seed) >>> 0) % BUG_SPAN_MS)
+
+export function createGarden(now, seed) {
+  const base = seed >>> 0
+  return {
+    v: 3,
+    rev: 1,
+    seed: base,
+    updatedAt: now,
+    coins: START_COINS,
+    fertilizer: START_FERTILIZER,
+    bugAt: nextBug(base, 1, now),
+    nextId: 2,
+    plants: [newPlant(1, 'leafy', base, now)]
+  }
+}
+
+/** Version 1 grew a node every 12 hours. Its cut marks become version 2 node counts. */
+function fromV1(raw) {
   if (raw?.v !== 1 || !Array.isArray(raw.cuts) || !Number.isFinite(raw.growthMs)) return raw
-  const days = raw.growthMs / DAY
-  const pot = POTS.findIndex(item => item.days === null || days < item.days)
+  const old = growthMs => BASE_NODES + Math.floor(6 * Math.sqrt(growthMs / DAY))
   return {
     ...raw,
     v: 2,
     rev: 1,
-    cuts: raw.cuts.map(node => (Number.isInteger(node) ? nodesAt(Math.max(0, node - BASE_NODES) * 12 * HOUR) : node)),
+    cuts: raw.cuts.map(node => (Number.isInteger(node) ? old(Math.max(0, node - BASE_NODES) * 12 * HOUR) : node)),
     fedUntil: 0,
     leanAt: 0,
-    turnedAt: now,
-    pot
+    turnedAt: raw.updatedAt,
+    pot: 0
   }
 }
 
-/** Turns stored data back into a valid plant, or returns null when it can't be trusted. */
-export function restorePlant(input, now) {
-  const raw = upgrade(input, now)
-  if (raw?.v !== 2 || !Array.isArray(raw.cuts) || raw.cuts.length > MAX_CUTS) return null
-  const numbers = [raw.rev, raw.seed, raw.plantedAt, raw.updatedAt, raw.hydratedUntil, raw.growthMs, raw.fedUntil, raw.leanAt, raw.turnedAt]
+/** Versions 1 and 2 held one plant. It becomes the first pot of a garden, and now grows twice as many nodes. */
+function fromSinglePlant(input) {
+  const raw = fromV1(input)
+  if (raw?.v !== 2 || !Array.isArray(raw.cuts) || !Number.isFinite(raw.growthMs) || raw.growthMs < 0) return raw
+  const seed = Number.isFinite(raw.seed) ? raw.seed >>> 0 : 0
+  const rev = Number.isFinite(raw.rev) ? raw.rev : 1
+  return {
+    v: 3,
+    rev,
+    seed,
+    updatedAt: raw.updatedAt,
+    coins: START_COINS,
+    fertilizer: START_FERTILIZER,
+    bugAt: nextBug(seed, Math.floor(rev), Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0),
+    nextId: 2,
+    plants: [
+      {
+        ...raw,
+        id: 1,
+        kind: 'leafy',
+        cuts: raw.cuts.map(node => (Number.isInteger(node) && node > BASE_NODES ? BASE_NODES + 2 * (node - BASE_NODES) : node)),
+        pot: potFor(raw.growthMs),
+        pickedAt: 0
+      }
+    ]
+  }
+}
+
+function restorePlant(raw, now) {
+  const kind = own(KINDS, raw?.kind)
+  if (!kind || !Number.isInteger(raw.id) || raw.id < 1) return null
+  if (!Array.isArray(raw.cuts) || raw.cuts.length > MAX_CUTS) return null
+  const numbers = [raw.seed, raw.plantedAt, raw.updatedAt, raw.hydratedUntil, raw.growthMs, raw.fedUntil, raw.leanAt, raw.turnedAt, raw.pickedAt]
   if (!numbers.every(Number.isFinite)) return null
   if (!Number.isInteger(raw.pot) || raw.pot < 0 || raw.pot >= POTS.length) return null
-  if (raw.growthMs < 0 || raw.rev < 1 || !raw.cuts.every(n => Number.isInteger(n) && n >= 0)) return null
+  if (raw.growthMs < 0 || !raw.cuts.every(n => Number.isInteger(n) && n >= 0)) return null
   return {
-    v: 2,
-    rev: Math.floor(raw.rev),
+    id: raw.id,
+    kind: raw.kind,
     seed: raw.seed >>> 0,
     plantedAt: Math.min(raw.plantedAt, now),
     updatedAt: Math.min(raw.updatedAt, now),
-    hydratedUntil: Math.min(raw.hydratedUntil, now + HYDRATED_MS),
+    hydratedUntil: Math.min(raw.hydratedUntil, now + kind.hydrated),
     growthMs: Math.floor(raw.growthMs),
     cuts: [...raw.cuts].sort((a, b) => a - b),
     fedUntil: Math.min(raw.fedUntil, now + FED_MS),
     leanAt: clamp(raw.leanAt, -1, 1),
     turnedAt: Math.min(raw.turnedAt, now),
-    pot: raw.pot
+    pot: raw.pot,
+    pickedAt: Math.min(raw.pickedAt, now)
   }
 }
 
-/** True when `a` is a later version of the plant than `b`. */
+/** Turns stored data back into a valid garden, or returns null when it can't be trusted. */
+export function restoreGarden(input, now) {
+  const raw = fromSinglePlant(input)
+  if (raw?.v !== 3 || !Array.isArray(raw.plants) || raw.plants.length < 1 || raw.plants.length > MAX_PLANTS) return null
+  if (![raw.rev, raw.seed, raw.updatedAt, raw.coins, raw.fertilizer, raw.bugAt, raw.nextId].every(Number.isFinite)) return null
+  if (raw.rev < 1 || raw.coins < 0 || raw.fertilizer < 0 || raw.bugAt < 0) return null
+  const plants = raw.plants.map(plant => restorePlant(plant, now))
+  if (plants.includes(null) || new Set(plants.map(plant => plant.id)).size !== plants.length) return null
+  return {
+    v: 3,
+    rev: Math.floor(raw.rev),
+    seed: raw.seed >>> 0,
+    updatedAt: Math.min(raw.updatedAt, now),
+    coins: Math.floor(raw.coins),
+    fertilizer: Math.min(MAX_FERTILIZER, Math.floor(raw.fertilizer)),
+    bugAt: Math.min(raw.bugAt, now + BUG_MIN_MS + BUG_SPAN_MS),
+    nextId: Math.max(Math.floor(raw.nextId), ...plants.map(plant => plant.id + 1)),
+    plants
+  }
+}
+
+/** True when `a` is a later version of the garden than `b`. */
 export const isNewer = (a, b) => a.rev > b.rev || (a.rev === b.rev && a.updatedAt > b.updatedAt)
 
 const potLimit = plant => {
@@ -101,59 +197,169 @@ const potLimit = plant => {
 }
 
 /**
- * Banks growth up to `now`. Only time spent watered counts, time spent fed counts half again, the
- * pot caps it, and a clock moved backwards adds none.
+ * Banks a plant's growth up to `now`. Only time spent watered counts, time spent fed counts half
+ * again, the species sets the pace, the pot caps it, and a clock moved backwards adds none.
  */
 export function settle(plant, now) {
   const end = Math.min(now, plant.hydratedUntil)
   const span = Math.max(0, end - plant.updatedAt)
   const fed = Math.max(0, Math.min(end, plant.fedUntil) - plant.updatedAt)
-  const growthMs = Math.min(potLimit(plant), plant.growthMs + span + Math.floor(fed / 2))
+  const gain = Math.floor(((span + Math.floor(fed / 2)) * KINDS[plant.kind].rate) / 100)
+  const growthMs = Math.min(potLimit(plant), plant.growthMs + gain)
   return { ...plant, growthMs: Math.max(plant.growthMs, growthMs), updatedAt: Math.max(plant.updatedAt, now) }
 }
 
-/** How far the plant leans toward the light: 0 is upright, 1 is as far as it goes. */
+/** How far a plant leans toward the light: 0 is upright, 1 is as far as it goes. */
 export const leanOf = (plant, now) => clamp(plant.leanAt + Math.max(0, now - plant.turnedAt) / LEAN_MS, -1, 1)
 
 export const nodeCount = plant => nodesAt(plant.growthMs)
 
-const act = (plant, now, change) => ({ ...settle(plant, now), ...change, rev: plant.rev + 1 })
-
-export function water(plant, now) {
-  return { plant: act(plant, now, { hydratedUntil: now + HYDRATED_MS }), done: true, message: 'Watered. Good for three days.' }
+/** What a plant sells for: more as it grows, and more for the slower species. */
+export function valueOf(plant) {
+  const base = 5 + 20 * stageOf(plant.growthMs) + Math.floor((4 * plant.growthMs) / DAY)
+  return Math.floor((base * KINDS[plant.kind].worth) / 100)
 }
 
-/** Cuts the tallest tip. New growth must appear between cuts, so it can't be pruned to nothing. */
-export function prune(plant, now) {
-  const settled = settle(plant, now)
-  const nodes = nodeCount(settled)
-  if (settled.cuts.length >= MAX_CUTS || settled.cuts.at(-1) >= nodes) {
-    return { plant, done: false, message: 'Nothing new to prune yet.' }
-  }
-  return { plant: act(plant, now, { cuts: [...settled.cuts, nodes] }), done: true, message: 'Pruned. Two new shoots will branch from the cut.' }
+const canPick = (plant, now) => stageOf(plant.growthMs) === 3 && now < plant.hydratedUntil && now - plant.pickedAt >= PICK_MS
+
+// Care rules. Each takes a settled plant and returns what changed, or `done: false` and why not.
+
+function water(plant, now) {
+  const kind = KINDS[plant.kind]
+  const wasThirsty = plant.hydratedUntil - now <= kind.thirsty
+  const days = kind.hydrated / DAY
+  return { change: { hydratedUntil: now + kind.hydrated }, coins: wasThirsty ? WATER_COINS : 0, done: true, message: `Watered. Good for ${plural(days, 'day')}.` }
+}
+
+/** Cuts the tallest tip. New growth must appear between cuts, so a plant can't be pruned to nothing. */
+function prune(plant) {
+  const nodes = nodeCount(plant)
+  if (plant.cuts.length >= MAX_CUTS || plant.cuts.at(-1) >= nodes) return { done: false, message: 'Nothing new to prune yet.' }
+  return { change: { cuts: [...plant.cuts, nodes] }, coins: KINDS[plant.kind].clip, done: true, message: 'Pruned. New shoots will branch from the cut.' }
 }
 
 /** Turns the pot. The lean it had now points away from the light, and it grows back the other way. */
-export function rotate(plant, now) {
-  return { plant: act(plant, now, { leanAt: -leanOf(plant, now), turnedAt: now }), done: true, message: 'Turned the pot. It will straighten up.' }
+function rotate(plant, now) {
+  return { change: { leanAt: -leanOf(plant, now), turnedAt: now }, done: true, message: 'Turned the pot. It will straighten up.' }
 }
 
-export function feed(plant, now) {
-  if (now < plant.fedUntil) return { plant, done: false, message: 'Still using the last feed.' }
-  return { plant: act(plant, now, { fedUntil: now + FED_MS }), done: true, message: 'Fed. It grows faster for two days.' }
+/** Uses one fertilizer: a jump of growth now, and faster growth for two days. */
+function feed(plant, now, garden) {
+  if (now < plant.fedUntil) return { done: false, message: 'Still using the last fertilizer.' }
+  if (garden.fertilizer < 1) return { done: false, message: 'No fertilizer left. The shop sells it.' }
+  const boost = Math.floor((FEED_BOOST_MS * KINDS[plant.kind].rate) / 100)
+  return {
+    change: { fedUntil: now + FED_MS, growthMs: Math.min(potLimit(plant), plant.growthMs + boost) },
+    done: true,
+    fertilizer: -1,
+    message: 'Fertilized. A burst of growth now, and faster growth for two days.'
+  }
 }
 
-export function repot(plant, now) {
-  const settled = settle(plant, now)
-  if (settled.pot >= POTS.length - 1) return { plant, done: false, message: 'Already in the largest pot.' }
-  if (settled.growthMs < REPOT_READY * potLimit(settled)) return { plant, done: false, message: 'The roots still have room.' }
-  const pot = settled.pot + 1
-  return { plant: act(plant, now, { pot }), done: true, message: `Moved to the ${POTS[pot].name}.` }
+function repot(plant) {
+  if (plant.pot >= POTS.length - 1) return { done: false, message: 'Already in the largest pot.' }
+  if (plant.growthMs < REPOT_READY * potLimit(plant)) return { done: false, message: 'The roots still have room.' }
+  return { change: { pot: plant.pot + 1 }, done: true, message: `Moved to the ${POTS[plant.pot + 1].name}.` }
 }
 
-export const ACTIONS = { feed, prune, repot, rotate, water }
+/** Picks what a fully grown plant has made. It needs two days to make more. */
+function pick(plant, now) {
+  if (stageOf(plant.growthMs) < 3) return { done: false, message: 'Nothing to pick until it is fully grown.' }
+  if (now >= plant.hydratedUntil) return { done: false, message: 'Too dry to pick from. Water it first.' }
+  if (now - plant.pickedAt < PICK_MS) return { done: false, message: 'Picked not long ago. Give it two days.' }
+  return { change: { pickedAt: now }, coins: Math.floor((PICK_COINS * KINDS[plant.kind].worth) / 100), done: true, message: 'Picked and sold.' }
+}
 
-export function describe(plant, now) {
+const CARE = { feed, pick, prune, repot, rotate, water }
+export const CARE_ACTIONS = ['water', 'prune', 'rotate', 'feed', 'repot', 'pick']
+export const ACTIONS = [...CARE_ACTIONS, 'sell', 'buy', 'shoo']
+export const SHOP_ITEMS = [...KIND_IDS, 'fertilizer']
+
+/** The plant an action should go to when none is named: the one that wants it most. */
+export function choose(garden, action, now) {
+  const plants = garden.plants.map(plant => settle(plant, now))
+  const best = score => plants.reduce((found, plant, i) => (score(plant) > score(plants[found]) ? i : found), 0)
+  const first = test => Math.max(0, plants.findIndex(test))
+  if (action === 'water') return best(plant => -(plant.hydratedUntil - now))
+  if (action === 'prune') return best(plant => nodeCount(plant) - (plant.cuts.at(-1) ?? 0))
+  if (action === 'rotate') return best(plant => leanOf(plant, now))
+  if (action === 'feed') return first(plant => now >= plant.fedUntil && now < plant.hydratedUntil)
+  if (action === 'repot') return first(plant => plant.pot < POTS.length - 1 && plant.growthMs >= REPOT_READY * potLimit(plant))
+  if (action === 'pick') return first(plant => canPick(plant, now))
+  return -1
+}
+
+/** The id of the plant a bug is sitting on, or null. */
+export function bugOn(garden, now) {
+  if (now < garden.bugAt) return null
+  return garden.plants[Math.floor(garden.bugAt / 60_000) % garden.plants.length].id
+}
+
+const fail = (garden, message, plant = null) => ({ garden, done: false, message, coins: 0, plant })
+
+const commit = (garden, now, change) => {
+  const rev = garden.rev + 1
+  return { ...garden, ...change, rev, updatedAt: Math.max(garden.updatedAt, now) }
+}
+
+function buy(garden, item, now) {
+  if (item === 'fertilizer') {
+    if (garden.fertilizer >= MAX_FERTILIZER) return fail(garden, 'The shelf is full of fertilizer already.')
+    if (garden.coins < FERTILIZER_PRICE) return fail(garden, `Fertilizer costs ${FERTILIZER_PRICE} coins. You have ${garden.coins}.`)
+    return { garden: commit(garden, now, { coins: garden.coins - FERTILIZER_PRICE, fertilizer: garden.fertilizer + 1 }), done: true, message: 'Bought one fertilizer.', coins: -FERTILIZER_PRICE, plant: null }
+  }
+  const kind = own(KINDS, item)
+  if (!kind) return fail(garden, `The shop sells: ${SHOP_ITEMS.join(', ')}.`)
+  if (garden.plants.length >= MAX_PLANTS) return fail(garden, 'The garden is full. Sell a plant to make room.')
+  if (garden.coins < kind.price) return fail(garden, `A ${kind.name} costs ${kind.price} coins. You have ${garden.coins}.`)
+  const id = garden.nextId
+  const seed = (Math.imul(id, 0x9e3779b1) + garden.seed) >>> 0
+  const plants = [...garden.plants, newPlant(id, item, seed, now)]
+  return { garden: commit(garden, now, { coins: garden.coins - kind.price, nextId: id + 1, plants }), done: true, message: `Planted a ${kind.name}.`, coins: -kind.price, plant: id }
+}
+
+function sell(garden, index, now) {
+  if (garden.plants.length < 2) return fail(garden, 'This is your only plant. Keep it.', garden.plants[index].id)
+  const plant = settle(garden.plants[index], now)
+  const coins = valueOf(plant)
+  const plants = garden.plants.filter((_, i) => i !== index)
+  return { garden: commit(garden, now, { coins: garden.coins + coins, plants }), done: true, message: `Sold the ${KINDS[plant.kind].name} for ${plural(coins, 'coin')}.`, coins, plant: plant.id }
+}
+
+function shoo(garden, now) {
+  const plant = bugOn(garden, now)
+  if (plant === null) return fail(garden, 'No bugs about.')
+  const next = commit(garden, now, { coins: garden.coins + BUG_COINS })
+  next.bugAt = nextBug(garden.seed, next.rev, now)
+  return { garden: next, done: true, message: `Shooed the bug away. +${plural(BUG_COINS, 'coin')}.`, coins: BUG_COINS, plant }
+}
+
+/**
+ * Runs one action on the garden. `plant` is a plant id, and when it is left out the action goes to
+ * the plant that wants it most. `item` is what to buy. Returns the garden after, whether anything
+ * happened, a line to show, the coins gained or spent, and the plant it touched.
+ */
+export function tend(garden, action, now, { plant: id = null, item = null } = {}) {
+  if (action === 'buy') return buy(garden, item, now)
+  if (action === 'shoo') return shoo(garden, now)
+  if (action !== 'sell' && !own(CARE, action)) return fail(garden, `Actions are: ${ACTIONS.join(', ')}.`)
+  if (action === 'sell' && id === null) return fail(garden, 'Say which plant to sell.')
+  const index = id === null ? choose(garden, action, now) : garden.plants.findIndex(plant => plant.id === id)
+  if (index < 0) return fail(garden, 'There is no such plant.')
+  if (action === 'sell') return sell(garden, index, now)
+
+  const settled = settle(garden.plants[index], now)
+  const result = CARE[action](settled, now, garden)
+  if (!result.done) return fail(garden, result.message, settled.id)
+  const coins = result.coins ?? 0
+  const plants = garden.plants.map((plant, i) => (i === index ? { ...settled, ...result.change } : plant))
+  const change = { coins: garden.coins + coins, fertilizer: garden.fertilizer + (result.fertilizer ?? 0), plants }
+  const message = coins ? `${result.message} +${plural(coins, 'coin')}.` : result.message
+  return { garden: commit(garden, now, change), done: true, message, coins, plant: settled.id }
+}
+
+export function describePlant(plant, now) {
+  const kind = KINDS[plant.kind]
   const settled = settle(plant, now)
   const days = settled.growthMs / DAY
   const left = plant.hydratedUntil - now
@@ -161,141 +367,67 @@ export function describe(plant, now) {
   const rootBound = settled.growthMs >= limit
   const lean = leanOf(plant, now)
   const dry = left <= 0
-  const mood = dry ? 'droopy' : left <= THIRSTY_MS ? 'thirsty' : rootBound ? 'root-bound' : lean >= LEAN_NOTICE ? 'leaning' : 'happy'
+  const thirsty = left <= kind.thirsty
+  const stage = stageOf(settled.growthMs)
+  const mood = dry ? 'droopy' : thirsty ? 'thirsty' : rootBound ? 'root-bound' : lean >= LEAN_NOTICE ? 'leaning' : 'happy'
   const needs = []
-  if (left <= THIRSTY_MS) needs.push('water')
+  if (thirsty) needs.push('water')
   if (rootBound) needs.push('repot')
   if (lean >= LEAN_NOTICE) needs.push('rotate')
+  const stageName = STAGES[stage].name ?? kind.last
   return {
+    id: plant.id,
+    kind: plant.kind,
+    kindName: kind.name,
+    canPick: canPick(settled, now),
+    canPrune: settled.cuts.length < MAX_CUTS && !(settled.cuts.at(-1) >= nodeCount(settled)),
     canRepot: settled.pot < POTS.length - 1 && settled.growthMs >= REPOT_READY * limit,
     days,
-    droop: dry ? 0.2 + 0.8 * Math.min(1, -left / DROOP_FULL_MS) : left <= THIRSTY_MS ? 0.1 : 0,
+    droop: dry ? 0.2 + 0.8 * Math.min(1, -left / DROOP_FULL_MS) : thirsty ? 0.1 : 0,
     fed: now < plant.fedUntil,
     growing: !dry && !rootBound,
     lean,
     mood,
+    name: `${stageName} ${kind.name}`,
     needs,
     nodes: nodeCount(settled),
     pot: settled.pot,
     potName: POTS[settled.pot].name,
-    stage: STAGES.findLast(stage => days >= stage.days).name,
+    // A fully grown plant shows what it has made, then buds while it makes more.
+    show: stage < 3 || dry ? 'none' : now - plant.pickedAt >= PICK_MS && !thirsty ? 'full' : 'bud',
+    stage,
+    stageName,
+    value: valueOf(settled),
     waterHours: Math.max(0, Math.round(left / HOUR))
   }
 }
 
-/** One plain sentence about the plant, for the status bar, the pet and the chat. */
+export function describe(garden, now) {
+  const plants = garden.plants.map(plant => describePlant(plant, now))
+  return {
+    bug: bugOn(garden, now),
+    coins: garden.coins,
+    fertilizer: garden.fertilizer,
+    needy: plants.filter(plant => plant.needs.length).length,
+    plants,
+    room: MAX_PLANTS - plants.length
+  }
+}
+
+const MOODS = {
+  droopy: 'dry and drooping, growth paused',
+  happy: 'happy',
+  leaning: 'leaning toward the light',
+  'root-bound': 'root-bound, growth paused',
+  thirsty: 'getting thirsty'
+}
+
+/** One plain sentence about a plant, for labels and the chat. */
+export const summarizePlant = view => `${view.name} in a ${view.potName}, ${MOODS[view.mood]}`
+
+/** One plain sentence about the whole garden, for the status bar, the pet and the chat. */
 export function summarize(view) {
-  const state = {
-    droopy: 'dry and drooping, growth paused',
-    happy: 'happy',
-    leaning: 'leaning toward the light',
-    'root-bound': 'root-bound, growth paused',
-    thirsty: 'getting thirsty'
-  }[view.mood]
-  return `${view.stage} in a ${view.potName}, ${state}`
-}
-
-function random(seed) {
-  let s = seed >>> 0
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0
-    let t = s
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-const UP = -Math.PI / 2
-const SEGMENT = 4.4
-const MIN_STEM = 2
-const CUT_NODES = 2
-const SHOOT_EVERY = 5
-const MAX_NATURAL_TIPS = 6
-const SHOOT_RATE = 0.62
-
-/** Shares growth between the tips in proportion to their rates, so side shoots stay shorter. */
-function nextTip(tips) {
-  let total = 0
-  let best = tips[0]
-  for (const tip of tips) {
-    tip.credit += tip.rate
-    total += tip.rate
-    if (tip.credit > best.credit) best = tip
-  }
-  best.credit -= total
-  return best
-}
-
-function addStem(stems, parent, angle, vigor, rate, natural = false) {
-  const at = parent ? parent.segments.length : 0
-  const stem = { angle, at, credit: 0, cut: false, depth: parent ? parent.depth + 1 : 0, hold: 0, natural, parent, rate, segments: [], vigor }
-  if (parent) parent.hold = at
-  stems.push(stem)
-  return stem
-}
-
-/** Where a stem is after `count` segments (all of them by default). Up is negative y. */
-export function pointOf(stem, count = stem.segments.length) {
-  let { x, y } = stem.parent ? pointOf(stem.parent, stem.at) : { x: 0, y: 0 }
-  for (let i = 0; i < count; i++) {
-    x += Math.cos(stem.segments[i].angle) * stem.segments[i].length
-    y += Math.sin(stem.segments[i].angle) * stem.segments[i].length
-  }
-  return { x, y }
-}
-
-function grow(stem, rng) {
-  const last = stem.segments.at(-1)?.angle ?? stem.angle
-  const count = stem.segments.length
-  stem.segments.push({
-    angle: last + (rng() - 0.5) * 0.4 + (UP - last) * (stem.natural ? 0.1 : 0.14),
-    leaf: count > 0 || stem.depth > 0 ? (count % 2 ? 1 : -1) : 0,
-    leafSize: 0.8 + rng() * 0.45,
-    length: SEGMENT * stem.vigor * (0.85 + rng() * 0.3)
-  })
-}
-
-function cutTallest(stems, rng) {
-  const tips = stems.filter(stem => !stem.cut)
-  const tallest = tips.reduce((best, stem) => (pointOf(stem).y < pointOf(best).y ? stem : best))
-  const keep = Math.max(MIN_STEM, tallest.hold, tallest.segments.length - CUT_NODES)
-  tallest.segments.length = Math.min(tallest.segments.length, keep)
-  tallest.cut = true
-  const angle = tallest.segments.at(-1)?.angle ?? tallest.angle
-  const spread = 0.55 + rng() * 0.25
-  const vigor = Math.max(0.6, tallest.vigor * 0.92)
-  grow(addStem(stems, tallest, angle - spread, vigor, tallest.rate), rng)
-  grow(addStem(stems, tallest, angle + spread, vigor, tallest.rate), rng)
-}
-
-/**
- * Replays the plant's whole life. The same seed and cuts always give the same shape. A plant left
- * alone grows tall with a few side shoots. Each cut stops the tallest tip and starts two more.
- */
-export function shape({ seed, cuts }, nodes) {
-  const rng = random(seed)
-  const stems = []
-  addStem(stems, null, UP + (rng() - 0.5) * 0.24, 1, 1)
-  const side = rng() < 0.5 ? -1 : 1
-  const pending = [...cuts]
-  for (let node = 1; node <= nodes; node++) {
-    const tips = stems.filter(stem => !stem.cut)
-    const stem = nextTip(tips)
-    grow(stem, rng)
-    const count = stem.segments.length
-    if (count % SHOOT_EVERY === 3 && tips.length < MAX_NATURAL_TIPS) {
-      const turn = (Math.floor(count / SHOOT_EVERY) % 2 ? 1 : -1) * (0.95 + rng() * 0.3)
-      grow(addStem(stems, stem, stem.segments.at(-1).angle + turn, Math.max(0.6, stem.vigor * 0.85), stem.rate * SHOOT_RATE, true), rng)
-    }
-    while (pending[0] <= node) {
-      pending.shift()
-      cutTallest(stems, rng)
-    }
-  }
-  while (pending.length) {
-    pending.shift()
-    cutTallest(stems, rng)
-  }
-  return { side, stems }
+  const plants = view.plants.map((plant, i) => `${i + 1}. ${summarizePlant(plant)}`).join('; ')
+  const bug = view.bug === null ? '' : ' A bug is sitting on one of them.'
+  return `${plural(view.plants.length, 'plant')}, ${plural(view.coins, 'coin')}, ${view.fertilizer} fertilizer. ${plants}.${bug}`
 }

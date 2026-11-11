@@ -1,8 +1,9 @@
-"""Where the plant is kept for the agent tools.
+"""Where the garden is kept for the agent tools.
 
 Tools can run in a different process from the Desktop routes, so SQLite in Hermes plugin storage is
-the meeting point. Desktop keeps its own copy too, so the plant still works with the backend off.
-Each care action raises `rev`, and the copy with the higher `rev` wins.
+the meeting point. Desktop keeps its own copy too, so the garden still works with the backend off.
+Each action raises `rev`, and the copy with the higher `rev` wins. Before the garden, the store held
+one plant under the key 'plant'. That row is upgraded into a garden the first time it is read.
 """
 
 from __future__ import annotations
@@ -28,28 +29,37 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _load(conn: Any, key: str, now: int) -> engine.Garden | None:
+    row = conn.execute("SELECT value FROM state WHERE key = ?", (key,)).fetchone()
+    if not row:
+        return None
+    try:
+        return engine.restore_garden(json.loads(row[0]), now)
+    except ValueError:
+        return None
+
+
 class Store:
     def __init__(self, connect: Callable[[], Any] = default_connect, clock: Callable[[], int] = now_ms):
         self._connect = connect
         self._clock = clock
 
-    def _change(self, work: Callable[[engine.Plant | None, int], tuple[engine.Plant | None, Any]]) -> Any:
-        """Run `work(stored plant, now)` in one write transaction. It returns (plant to save or None, result)."""
+    def _change(self, work: Callable[[engine.Garden | None, int], tuple[engine.Garden | None, Any]]) -> Any:
+        """Run `work(stored garden, now)` in one write transaction. It returns (garden to save or None, result)."""
         conn = self._connect()
         try:
             conn.execute(_SCHEMA)
             conn.execute("BEGIN IMMEDIATE")
             try:
                 now = self._clock()
-                row = conn.execute("SELECT value FROM state WHERE key = 'plant'").fetchone()
-                try:
-                    stored = engine.restore_plant(json.loads(row[0]), now) if row else None
-                except ValueError:
-                    stored = None
+                has_garden = conn.execute("SELECT 1 FROM state WHERE key = 'garden'").fetchone() is not None
+                stored = _load(conn, "garden" if has_garden else "plant", now)
                 save, result = work(stored, now)
+                if save is None and stored is not None and not has_garden:
+                    save = stored  # keep the upgraded plant as a garden
                 if save is not None:
                     conn.execute(
-                        "INSERT INTO state (key, value) VALUES ('plant', ?) "
+                        "INSERT INTO state (key, value) VALUES ('garden', ?) "
                         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                         (json.dumps(save, separators=(",", ":")),),
                     )
@@ -61,36 +71,38 @@ class Store:
         finally:
             conn.close()
 
-    def read(self) -> tuple[engine.Plant | None, int]:
-        """The stored plant, or None when nothing has been stored, and the time it was read."""
+    def read(self) -> tuple[engine.Garden | None, int]:
+        """The stored garden, or None when nothing has been stored, and the time it was read."""
         return self._change(lambda stored, now: (None, (stored, now)))
 
-    def act(self, action: str) -> tuple[engine.Plant, bool, str, int]:
-        """Apply one care action, planting a new plant first if there is none."""
+    def act(self, action: str, plant: int | None = None, item: str | None = None) -> tuple[dict[str, Any], int]:
+        """Apply one action (`plant` is a plant id), starting a garden first if there is none.
+
+        Returns engine.tend's answer (garden, done, message, coins, plant) and the time.
+        """
 
         def work(stored, now):
-            plant = stored or engine.create_plant(now)
-            after, done, message = engine.ACTIONS[action](plant, now)
-            return (after if done or stored is None else None), (after, done, message, now)
+            outcome = engine.tend(stored or engine.create_garden(now), action, now, plant=plant, item=item)
+            return (outcome["garden"] if outcome["done"] or stored is None else None), (outcome, now)
 
         return self._change(work)
 
-    def ensure(self) -> tuple[engine.Plant, int]:
-        """The stored plant, planting one if there is none."""
+    def ensure(self) -> tuple[engine.Garden, int]:
+        """The stored garden, starting one if there is none."""
 
         def work(stored, now):
             if stored:
                 return None, (stored, now)
-            plant = engine.create_plant(now)
-            return plant, (plant, now)
+            garden = engine.create_garden(now)
+            return garden, (garden, now)
 
         return self._change(work)
 
-    def offer(self, raw: Any) -> tuple[engine.Plant | None, int]:
-        """Take Desktop's copy if it is newer than the stored one. Returns the plant now stored."""
+    def offer(self, raw: Any) -> tuple[engine.Garden | None, int]:
+        """Take Desktop's copy if it is newer than the stored one. Returns the garden now stored."""
 
         def work(stored, now):
-            offered = engine.restore_plant(raw, now)
+            offered = engine.restore_garden(raw, now)
             if offered and (stored is None or engine.is_newer(offered, stored)):
                 return offered, (offered, now)
             return None, (stored, now)

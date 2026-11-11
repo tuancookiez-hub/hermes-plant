@@ -29,11 +29,11 @@ store = store_module.Store()
 
 def _answer(work):
     try:
-        plant, now = work()
-        return {"ok": True, "plant": plant, "now": now}
+        garden, now = work()
+        return {"ok": True, "garden": garden, "now": now}
     except Exception as exc:  # never let a route raise: the page expects JSON either way
         logger.warning("hermes-plant: route failed (%s)", type(exc).__name__)
-        return {"ok": False, "error": "The houseplant's storage could not be reached."}
+        return {"ok": False, "error": "The garden's storage could not be reached."}
 
 
 @router.get("/state")
@@ -43,4 +43,4 @@ def state():
 
 @router.post("/state")
 def offer(body: dict):
-    return _answer(lambda: store.offer(body.get("plant")))
+    return _answer(lambda: store.offer(body.get("garden")))

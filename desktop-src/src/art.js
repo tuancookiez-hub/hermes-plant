@@ -1,7 +1,7 @@
-// Draws the plant as an SVG string, in the manner of a blue ink engraving: paper-white shapes, ink
+// Draws a plant as an SVG string, in the manner of a blue ink engraving: paper-white shapes, ink
 // outlines, and hatching on the side away from the light. Everything here is drawn by this file.
 
-import { shape } from './engine.js'
+import { shape } from './shape.js'
 
 export const INK = '#1717e0'
 export const PAPER = '#fdfdff'
@@ -15,9 +15,20 @@ const LINE = 0.95
 const MAX_FLOWERS = 14
 // A small plant is shown closer up. The frame never gets tighter than this many units.
 const MIN_FRAME = 60
-// Only the newest part of a stem keeps its leaves, so older wood shows as bare branches.
-const LEAVES = 9
-const CUT_LEAVES = 3
+// How each species is drawn. Only the newest `leaves` segments of a stem keep their leaves (`cutLeaves`
+// on a pruned stem), so older wood shows as bare branches. `column` is the width of a cactus stem.
+const LOOKS = {
+  leafy: { leaves: 9, cutLeaves: 3, leafSize: 9, out: 1.05, both: false, trunk: 1, taper: 0.7, droop: 1, column: 0 },
+  fern: { leaves: 99, cutLeaves: 99, leafSize: 8.5, out: 1.2, both: true, trunk: 0.4, taper: 1, droop: 1, column: 0 },
+  bonsai: { leaves: 4, cutLeaves: 2, leafSize: 5.4, out: 1.15, both: true, trunk: 2.5, taper: 0.66, droop: 0.6, column: 0 },
+  cactus: { leaves: 0, cutLeaves: 0, leafSize: 0, out: 0, both: false, trunk: 1, taper: 1, droop: 0.22, column: 9 }
+}
+// Leafy plants come in three leaf shapes, chosen by the plant's seed: [length, width].
+const LEAF_FORMS = [
+  [1, 1],
+  [0.86, 1.5],
+  [1.22, 0.7]
+]
 const POT_SHAPES = [
   { width: 20, height: 15, rim: 3 },
   { width: 25, height: 18, rim: 3.5 },
@@ -40,6 +51,9 @@ const SMALL_BELOW = 6.2
 const LIMP_LEAF =
   `<path d="M0 0C2-2.2 7-1.6 10 1.6C7 3.2 3 2.7 0 0Z" fill="${PAPER}"/>` +
   '<path d="M0 0Q5 0 9.3 1.4M2 .4L2.8 1.8M3.6 .5L4.5 2.2M5.2 .7L6 2.3M6.8 1L7.5 2.1" fill="none"/>'
+const ROUND_LEAF =
+  `<path d="M0 0C1.6-3.6 8.2-3.6 10 0C8.2 3.6 1.6 3.6 0 0Z" fill="${PAPER}"/>` +
+  '<path d="M0 0L9 0M3.4 .4L4.4 2.4M6 .4L6.9 2" fill="none"/>'
 const PETAL = 'M0 0C-1.7-1.5-1.6-3.8 0-4.2C1.6-3.8 1.7-1.5 0 0Z'
 const FLOWER =
   [0, 72, 144, 216, 288].map(turn => `<path d="${PETAL}" transform="rotate(${turn})" fill="${PAPER}"/>`).join('') +
@@ -47,8 +61,8 @@ const FLOWER =
 const BUD = `<path d="M0 0C-1.3-1-1.1-2.7 0-3.3C1.1-2.7 1.3-1 0 0Z" fill="${PAPER}"/><path d="M-.9-.6L0 0L.9-.6" fill="none"/>`
 
 /** Lays the stems out, bending them for lean and droop, and lists the leaves and tips. */
-function place({ side, stems }, view) {
-  const droop = view.droop
+function place({ side, stems }, view, look) {
+  const droop = view.droop * look.droop
   const lean = view.lean * side
   const paths = new Map()
   const leaves = []
@@ -58,6 +72,7 @@ function place({ side, stems }, view) {
   for (const stem of stems) {
     let { x, y } = stem.parent ? paths.get(stem.parent)[stem.at] : { x: 0, y: 0 }
     const points = [{ x, y }]
+    const kept = stem.cut ? look.cutLeaves : look.leaves
     stem.segments.forEach((segment, i) => {
       const height = Math.min(1, -y / 45)
       const outward = Math.abs(Math.cos(segment.angle)) < 0.12 ? side : Math.sign(Math.cos(segment.angle))
@@ -65,14 +80,16 @@ function place({ side, stems }, view) {
       x += Math.cos(angle) * segment.length
       y += Math.sin(angle) * segment.length
       points.push({ x, y })
-      if (segment.leaf && stem.segments.length - i <= (stem.cut ? CUT_LEAVES : LEAVES)) {
-        const out = angle + segment.leaf * 1.05
-        const toDown = Math.atan2(Math.sin(DOWN - out), Math.cos(DOWN - out))
-        leaves.push({ angle: out + toDown * droop * 0.7, size: 9 * segment.leafSize * Math.sqrt(stem.vigor), x, y })
+      if (segment.leaf && stem.segments.length - i <= kept) {
+        for (const turn of look.both || segment.leaf === 2 ? [1, -1] : [segment.leaf]) {
+          const out = angle + turn * look.out
+          const toDown = Math.atan2(Math.sin(DOWN - out), Math.cos(DOWN - out))
+          leaves.push({ angle: out + toDown * droop * 0.7, size: look.leafSize * segment.leafSize * Math.sqrt(stem.vigor), x, y })
+        }
       }
     })
     paths.set(stem, points)
-    lines.push({ depth: stem.depth, points })
+    lines.push({ depth: stem.depth, points, vigor: stem.vigor })
     if (!stem.cut && stem.segments.length) {
       const last = points.at(-1)
       const before = points.at(-2)
@@ -82,7 +99,7 @@ function place({ side, stems }, view) {
   return { leaves, lines, tips }
 }
 
-function bounds({ leaves, lines }) {
+function bounds({ leaves, lines }, margin = 0) {
   const box = { left: -4, right: 4, top: -4, bottom: 0 }
   const grow = (x, y) => {
     box.left = Math.min(box.left, x)
@@ -90,7 +107,12 @@ function bounds({ leaves, lines }) {
     box.top = Math.min(box.top, y)
     box.bottom = Math.max(box.bottom, y)
   }
-  for (const line of lines) for (const p of line.points) grow(p.x, p.y)
+  for (const line of lines) {
+    for (const p of line.points) {
+      grow(p.x - margin, p.y - margin)
+      grow(p.x + margin, p.y)
+    }
+  }
   for (const leaf of leaves) grow(leaf.x + Math.cos(leaf.angle) * leaf.size, leaf.y + Math.sin(leaf.angle) * leaf.size)
   return box
 }
@@ -154,12 +176,59 @@ function drawPot(cx, index) {
 
 const trail = points => points.map((p, i) => `${i ? 'L' : 'M'}${n(p.x)} ${n(p.y)}`).join('')
 
+/** Ordinary stems: an ink line, hollow where it is thick enough to read as a trunk. */
+function drawStems(lines, look, weight, trunk, scale) {
+  const parts = lines.map(line => {
+    const width = Math.max(weight * 1.25, trunk * look.trunk * look.taper ** line.depth)
+    const d = trail(line.points)
+    const hollow = width * scale > 2.3 ? `<path d="${d}" stroke="${PAPER}" stroke-width="${n(width - 1.5 * weight)}"/>` : ''
+    return [`<path d="${d}" stroke="${PAPER}" stroke-width="${n(width + 1.3 * weight)}"/>`, `<path d="${d}" stroke-width="${n(width)}"/>${hollow}`]
+  })
+  return parts.map(part => part[0]).join('') + parts.map(part => part[1]).join('')
+}
+
+/** Cactus stems: fat ribbed columns with spines. Strokes laid inside one another make the ribs. */
+function drawColumns(lines, look, weight) {
+  const outer = []
+  const fill = []
+  const ribs = []
+  let spines = ''
+  for (const line of lines) {
+    const width = look.column * line.vigor
+    const d = trail(line.points)
+    // An arm's ribs start past the elbow, so they don't run across the trunk it grew from.
+    const inner = trail(line.depth && line.points.length > 2 ? line.points.slice(1) : line.points)
+    outer.push(`<path d="${d}" stroke-width="${n(width)}"/>`)
+    fill.push(`<path d="${d}" stroke="${PAPER}" stroke-width="${n(width - 2 * weight)}"/>`)
+    ribs.push(`<path d="${inner}" stroke-width="${n(width * 0.42)}"/><path d="${inner}" stroke="${PAPER}" stroke-width="${n(width * 0.42 - 1.3 * weight)}"/>`)
+    for (let i = 1; i < line.points.length; i++) {
+      const a = line.points[i - 1]
+      const b = line.points[i]
+      const length = Math.hypot(b.x - a.x, b.y - a.y) || 1
+      const ux = (b.x - a.x) / length
+      const uy = (b.y - a.y) / length
+      for (const t of [0.3, 0.8]) {
+        const x = a.x + (b.x - a.x) * t
+        const y = a.y + (b.y - a.y) * t
+        for (const way of [1, -1]) {
+          const edge = (width / 2) * way
+          spines += `M${n(x - uy * edge)} ${n(y + ux * edge)}l${n(-uy * way * 1.5 + ux * 0.8)} ${n(ux * way * 1.5 + uy * 0.8)}`
+        }
+      }
+    }
+  }
+  return outer.join('') + fill.join('') + ribs.join('') + `<path d="${spines}" stroke-width="${n(weight * 0.8)}"/>`
+}
+
 /**
- * `view` is what `describe` returns. `uid` keeps the SVG's ids apart when two plants share a page.
+ * Draws one plant in its pot. `view` is what `describePlant` returns. `uid` keeps the SVG's ids apart
+ * when several plants share a page. The root element carries `data-tip-x` and `data-tip-y`: where the
+ * tallest tip is, as fractions of the picture, so the page can aim an animation at it.
  */
 export function drawPlant(plant, view, uid = 'hp') {
-  const laid = place(shape(plant, view.nodes), view)
-  const box = bounds(laid)
+  const look = LOOKS[plant.kind] ?? LOOKS.leafy
+  const laid = place(shape(plant, view.nodes), view, look)
+  const box = bounds(laid, look.column ? look.column / 2 + 1.6 : 0)
   const { top } = drawPot(0, view.pot)
   const room = top + 1 - TOP
   const scale = Math.min(MAX_SCALE, (VIEW - 2 * SIDE) / (box.right - box.left), room / Math.max(1, -box.top))
@@ -169,32 +238,26 @@ export function drawPlant(plant, view, uid = 'hp') {
   const limp = view.droop > 0.35
   const weight = LINE / scale
   const trunk = (1.3 + Math.min(1.4, view.nodes / 30)) / scale
+  const stems = look.column ? drawColumns(laid.lines, look, weight) : drawStems(laid.lines, look, weight, trunk, scale)
 
-  const stemParts = laid.lines
-    .map(line => {
-      const width = Math.max(weight * 1.25, trunk * 0.7 ** line.depth)
-      const d = trail(line.points)
-      const hollow = width * scale > 2.3 ? `<path d="${d}" stroke="${PAPER}" stroke-width="${n(width - 1.5 * weight)}"/>` : ''
-      return [`<path d="${d}" stroke="${PAPER}" stroke-width="${n(width + 1.3 * weight)}"/>`, `<path d="${d}" stroke-width="${n(width)}"/>${hollow}`]
-    })
-  const stems = stemParts.map(part => part[0]).join('') + stemParts.map(part => part[1]).join('')
-
+  const [long, wide] = plant.kind === 'leafy' ? LEAF_FORMS[plant.seed % LEAF_FORMS.length] : plant.kind === 'fern' ? [1, 0.6] : [1, 1]
   const leaves = laid.leaves
     .map(leaf => {
       const size = leaf.size / 10
       const flip = Math.cos(leaf.angle) < 0 ? -1 : 1
-      const kind = limp ? 'limp' : leaf.size * scale < SMALL_BELOW ? 'small' : 'leaf'
-      return `<use href="#${uid}-${kind}" transform="translate(${n(leaf.x)} ${n(leaf.y)}) rotate(${n((leaf.angle * 180) / Math.PI)}) scale(${n(size)} ${n(size * flip)})" stroke-width="${n(weight / size)}"/>`
+      const kind = limp ? 'limp' : plant.kind === 'bonsai' ? 'round' : plant.kind === 'fern' || leaf.size * scale < SMALL_BELOW ? 'small' : 'leaf'
+      return `<use href="#${uid}-${kind}" transform="translate(${n(leaf.x)} ${n(leaf.y)}) rotate(${n((leaf.angle * 180) / Math.PI)}) scale(${n(size * long)} ${n(size * wide * flip)})" stroke-width="${n(weight / size)}"/>`
     })
     .join('')
 
   let tips = ''
-  if (view.stage === 'flowering' && !limp) {
-    const kind = view.mood === 'thirsty' ? 'bud' : 'flower'
-    const size = (view.fed ? 1.15 : 1) * Math.min(1.2, 0.72 / scale + 0.35)
+  if (view.show !== 'none' && plant.kind !== 'fern') {
+    const kind = view.show === 'bud' ? 'bud' : 'flower'
+    const size = (view.fed ? 1.15 : 1) * Math.min(1.2, 0.72 / scale + 0.35) * (look.column ? 1.5 : 1)
+    const lift = look.column / 2
     tips = laid.tips
       .slice(0, MAX_FLOWERS)
-      .map(tip => `<use href="#${uid}-${kind}" transform="translate(${n(tip.x)} ${n(tip.y)}) rotate(${n((tip.angle * 180) / Math.PI + 90)}) scale(${n(size)})" stroke-width="${n(weight / size)}"/>`)
+      .map(tip => `<use href="#${uid}-${kind}" transform="translate(${n(tip.x + Math.cos(tip.angle) * lift)} ${n(tip.y + Math.sin(tip.angle) * lift)}) rotate(${n((tip.angle * 180) / Math.PI + 90)}) scale(${n(size)})" stroke-width="${n(weight / size)}"/>`)
       .join('')
   }
 
@@ -204,10 +267,13 @@ export function drawPlant(plant, view, uid = 'hp') {
   const reach = Math.max(cx - (cx + box.left * scale), cx + box.right * scale - cx, half) * 2 + 4
   const frame = Math.min(VIEW, Math.max(MIN_FRAME, VIEW - (pot.top + 1 + box.top * scale) + 3, reach))
   const frameX = Math.min(VIEW - frame, Math.max(0, cx - frame / 2))
+  const highest = laid.tips.reduce((best, tip) => (tip.y < best.y ? tip : best), { x: 0, y: box.top / 2 })
+  const tipX = (cx + highest.x * scale - frameX) / frame
+  const tipY = (pot.top + 1 + highest.y * scale - (VIEW - frame)) / frame
 
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(frameX)} ${n(VIEW - frame)} ${n(frame)} ${n(frame)}" width="100%" height="100%" aria-hidden="true" stroke="${INK}" stroke-width="${LINE}" stroke-linecap="round" stroke-linejoin="round">` +
-    `<defs><g id="${uid}-leaf">${LEAF}</g><g id="${uid}-small">${SMALL_LEAF}</g><g id="${uid}-limp">${LIMP_LEAF}</g><g id="${uid}-flower">${FLOWER}</g><g id="${uid}-bud">${BUD}</g></defs>` +
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${n(frameX)} ${n(VIEW - frame)} ${n(frame)} ${n(frame)}" width="100%" height="100%" aria-hidden="true" data-tip-x="${tipX.toFixed(3)}" data-tip-y="${tipY.toFixed(3)}" stroke="${INK}" stroke-width="${LINE}" stroke-linecap="round" stroke-linejoin="round">` +
+    `<defs><g id="${uid}-leaf">${LEAF}</g><g id="${uid}-small">${SMALL_LEAF}</g><g id="${uid}-limp">${LIMP_LEAF}</g><g id="${uid}-round">${ROUND_LEAF}</g><g id="${uid}-flower">${FLOWER}</g><g id="${uid}-bud">${BUD}</g></defs>` +
     pot.back +
     `<g class="hp-foliage"><g transform="translate(${n(cx)} ${n(pot.top + 1)}) scale(${Math.round(scale * 1000) / 1000})" fill="none">${stems}${leaves}${tips}</g></g>` +
     pot.front +
@@ -216,5 +282,11 @@ export function drawPlant(plant, view, uid = 'hp') {
   )
 }
 
+/** A grown example of a species, for the shop. */
+export function drawSample(kind, uid) {
+  const plant = { kind, seed: 21, cuts: kind === 'bonsai' ? [14] : [] }
+  return drawPlant(plant, { droop: 0, fed: false, lean: 0, nodes: 30, pot: 1, show: kind === 'fern' ? 'none' : 'full' }, uid)
+}
+
 /** The plant's shape, measured, for tests. */
-export const measure = (plant, view) => bounds(place(shape(plant, view.nodes), view))
+export const measure = (plant, view) => bounds(place(shape(plant, view.nodes), view, LOOKS[plant.kind] ?? LOOKS.leafy))

@@ -25,8 +25,12 @@ def clock():
 
 
 @pytest.fixture
-def store(tmp_path, clock):
+def db_path(tmp_path):
+    return tmp_path / "data.db"
+
+
+@pytest.fixture
+def store(db_path, clock):
     from plantcore.store import Store
 
-    path = tmp_path / "data.db"
-    return Store(connect=lambda: sqlite3.connect(path), clock=clock)
+    return Store(connect=lambda: sqlite3.connect(db_path), clock=clock)
